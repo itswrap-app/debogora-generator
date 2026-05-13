@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 # --- KONFIGURACJA STRONY I CI ---
 st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
@@ -68,11 +68,24 @@ with col1:
     klient_imie_nazwisko = st.text_input("Imię i nazwisko klienta (wymagane) *")
     firma = st.text_input("Firma (opcjonalnie)")
     nip = st.text_input("NIP (opcjonalnie)")
+    l_osob_total = st.number_input("Łączna liczba uczestników wydarzenia", min_value=1, value=10, step=1)
 with col2:
     email = st.text_input("Adres e-mail (opcjonalnie)")
     telefon = st.text_input("Telefon (opcjonalnie)")
-    l_osob_total = st.number_input("Łączna liczba uczestników wydarzenia", min_value=1, value=10, step=1)
-    l_dni = st.number_input("Liczba dób noclegowych", min_value=1, value=1, step=1)
+    
+    col_data1, col_data2 = st.columns(2)
+    with col_data1:
+        data_przyjazdu = st.date_input("Data przyjazdu", value=date.today())
+    with col_data2:
+        data_wyjazdu = st.date_input("Data wyjazdu", value=date.today() + timedelta(days=1))
+        
+    l_dni = (data_wyjazdu - data_przyjazdu).days
+    
+    if l_dni < 1:
+        st.error("Data wyjazdu musi być późniejsza niż data przyjazdu.")
+        l_dni = 1 # Zabezpieczenie przed błędem wyliczeń
+    else:
+        st.info(f"Wyliczona liczba dób noclegowych: **{l_dni}**")
 
 # --- 2. ZAKWATEROWANIE ---
 st.markdown('<h3 class="section-header">2. Zakwaterowanie (Dworek & Domki)</h3>', unsafe_allow_html=True)
@@ -89,11 +102,11 @@ with col_dworek:
     st.write(f"Zadeklarowane miejsca w dworku: **{osoby_dworek}**")
     
     if pokoje_1 > 0:
-        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 1-osobowy (x{pokoje_1})", "Ilość": pokoje_1, "Cena Jedn. (PLN)": 1 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_1 * 1 * stawka_dworek * l_dni})
+        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 1-osobowy (x{pokoje_1}) x {l_dni} dób", "Ilość": pokoje_1, "Cena Jedn. (PLN)": 1 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_1 * 1 * stawka_dworek * l_dni})
     if pokoje_2 > 0:
-        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 2-osobowy (x{pokoje_2})", "Ilość": pokoje_2, "Cena Jedn. (PLN)": 2 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_2 * 2 * stawka_dworek * l_dni})
+        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 2-osobowy (x{pokoje_2}) x {l_dni} dób", "Ilość": pokoje_2, "Cena Jedn. (PLN)": 2 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_2 * 2 * stawka_dworek * l_dni})
     if pokoje_3 > 0:
-        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 3-osobowy (x{pokoje_3})", "Ilość": pokoje_3, "Cena Jedn. (PLN)": 3 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_3 * 3 * stawka_dworek * l_dni})
+        pozycje_kosztowe.append({"Kategoria": "Zakwaterowanie", "Opis": f"Pokój 3-osobowy (x{pokoje_3}) x {l_dni} dób", "Ilość": pokoje_3, "Cena Jedn. (PLN)": 3 * stawka_dworek * l_dni, "Suma (PLN)": pokoje_3 * 3 * stawka_dworek * l_dni})
 
 with col_domki:
     st.subheader("Domki Krovacja")
