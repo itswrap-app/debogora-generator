@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
+import base64
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
 
-# Barwy z Twojego CI
+# Barwy z CI Dębogóry
 CI = {
     "dark_green": "#00622f",
     "light_green": "#e8ece6",
@@ -13,36 +14,33 @@ CI = {
     "white": "#ffffff"
 }
 
-# --- ZAAWANSOWANA STYLIZACJA CSS ---
+# --- STYLIZACJA CSS ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,700;1,400&family=PT+Sans:wght@400;700&display=swap');
 
-    /* Ogólne tło i fonty */
     .stApp {{
         background-color: {CI['white']};
         font-family: 'PT Sans', sans-serif;
         color: {CI['gray']};
     }}
 
-    /* Nagłówki Lora */
     h1, h2, h3, h4 {{
         font-family: 'Lora', serif !important;
         color: {CI['dark_green']} !important;
         font-weight: 700 !important;
-        margin-bottom: 1rem !important;
     }}
 
-    /* Kontenery sekcji - jasna zieleń */
+    /* Kontenery sekcji */
     div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"] {{
         background-color: {CI['light_green']};
-        padding: 2.5rem;
+        padding: 2rem;
         border-radius: 0px;
         border-left: 5px solid {CI['dark_green']};
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
     }}
 
-    /* Stylowanie przycisków */
+    /* Przyciski */
     div.stButton > button {{
         background-color: {CI['dark_green']} !important;
         color: white !important;
@@ -53,37 +51,40 @@ st.markdown(f"""
         font-weight: bold !important;
         text-transform: uppercase;
         letter-spacing: 2px;
-        transition: 0.3s;
     }}
 
     div.stButton > button:hover {{
         background-color: {CI['gray']} !important;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    }}
-
-    /* Estetyka pól formularza */
-    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div, div[data-baseweb="datepicker"] > div {{ 
-        border: 1px solid #ced4cd !important; 
-        border-radius: 0px !important;
-        background-color: white !important;
     }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- WYŚRODKOWANE I MNIEJSZE LOGO ---
-col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
-with col_l2:
+# --- WYŚRODKOWANE LOGO (METODA HTML/BASE64) ---
+def get_base64_img(path):
     try:
-        # Szerokość 150px (2x mniejsza niż poprzednio)
-        st.image("logo.png", width=150)
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
     except:
-        st.write(f"<p style='text-align:center; color:{CI['dark_green']}'>[ Tu pojawi się logo.png ]</p>", unsafe_allow_html=True)
+        return None
 
-st.markdown(f"<h1 style='text-align: center; margin-top:-20px;'>System Ofertowania</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center; color: {CI['gray']}; font-style: italic;'>Dwór Dębogóra & Domki Krovacja</p>", unsafe_allow_html=True)
-st.write("---")
+logo_b64 = get_base64_img("logo.png")
 
-# --- BAZA DANYCH CENNIKA ---
+if logo_b64:
+    st.markdown(
+        f"""
+        <div style="display: flex; justify-content: center; align-items: center; padding: 10px 0;">
+            <img src="data:image/png;base64,{logo_b64}" width="120">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    st.markdown(f"<p style='text-align:center; color:{CI['dark_green']}'>[ Logo.png ]</p>", unsafe_allow_html=True)
+
+st.markdown(f"<h1 style='text-align: center; margin-top: 0px;'>System Ofertowania</h1>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: {CI['gray']}; font-style: italic; margin-bottom: 30px;'>Dwór Dębogóra & Domki Krovacja</p>", unsafe_allow_html=True)
+
+# --- LOGIKA BIZNESOWA ---
 CENNIK = {
     "nocleg_1_noc": 220,
     "nocleg_2_noce": 170,
@@ -118,15 +119,15 @@ CENNIK = {
 
 pozycje_kosztowe = []
 
-# --- 1. PEŁNE DANE KLIENTA ---
+# --- 1. DANE KLIENTA ---
 with st.container():
     st.subheader("1. Dane Klienta i Termin")
     c1, c2 = st.columns(2)
     with c1:
-        klient_imie = st.text_input("Imię i nazwisko (obligatoryjne) *")
+        klient_imie = st.text_input("Imię i nazwisko (wymagane) *")
         firma_n = st.text_input("Nazwa Firmy")
         nip_n = st.text_input("NIP")
-        l_osob_total = st.number_input("Łączna liczba osób na imprezie", min_value=1, value=10)
+        l_osob_total = st.number_input("Łączna liczba osób", min_value=1, value=10)
     with c2:
         mail_n = st.text_input("E-mail")
         tel_n = st.text_input("Telefon")
@@ -147,7 +148,6 @@ with st.container():
 with st.container():
     st.subheader("2. Konfiguracja Noclegów")
     stawka_dworek = CENNIK["nocleg_1_noc"] if l_dni == 1 else CENNIK["nocleg_2_noce"]
-    
     col_dw, col_dm = st.columns(2)
     
     with col_dw:
@@ -156,8 +156,6 @@ with st.container():
         p2 = st.number_input("Pokoje 2-os", 0)
         p3 = st.number_input("Pokoje 3-os", 0)
         os_dw = (p1*1) + (p2*2) + (p3*3)
-        st.write(f"Miejsca: {os_dw}")
-        
         if os_dw > 0:
             if p1>0: pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"Dworek: Pokój 1-os (x{p1})", "Ilość": p1, "Cena": 1*stawka_dworek*l_dni, "Suma": p1*1*stawka_dworek*l_dni})
             if p2>0: pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"Dworek: Pokój 2-os (x{p2})", "Ilość": p2, "Cena": 2*stawka_dworek*l_dni, "Suma": p2*2*stawka_dworek*l_dni})
@@ -200,9 +198,9 @@ with st.container():
             ile_g = st.number_input(f"Ilość (grupy/wynajmy) na: {a}", 1, 10, 1)
             pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile_g, "Cena": a_data["cena"], "Suma": ile_g * a_data["cena"]})
 
-# --- 5. KOSZTORYS I GENEROWANIE ---
+# --- 5. PODSUMOWANIE ---
 with st.container():
-    st.subheader("5. Podsumowanie i Edycja Taryf")
+    st.subheader("5. Kosztorys Ofertowy")
     df = pd.DataFrame(pozycje_kosztowe)
     if not df.empty:
         edytowany_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
@@ -214,4 +212,4 @@ with st.container():
                 st.error("Błąd: Imię i nazwisko klienta jest wymagane!")
             else:
                 st.balloons()
-                st.success(f"Oferta dla {klient_imie} gotowa do pobrania (logika PDF w przygotowaniu).")
+                st.success(f"Oferta dla {klient_imie} gotowa.")
