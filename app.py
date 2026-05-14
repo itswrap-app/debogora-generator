@@ -6,23 +6,23 @@ import os
 import subprocess
 import base64
 
-# Biblioteki Google i PDF
+# Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from pptx import Presentation
 from pypdf import PdfWriter, PdfReader
 
-# ReportLab - Generowanie PDF z zachowaniem czcionek CI
+# ReportLab - Generowanie eleganckiego PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# --- KONFIGURACJA CI DĘBOGÓRA ---
-st.set_page_config(page_title="System Ofertowania - Dębogóra", layout="wide")
+# --- KONFIGURACJA ---
+st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
 
 CI = {
     "dark_green": "#00622f",
@@ -31,7 +31,10 @@ CI = {
     "white": "#ffffff"
 }
 
-# --- LOGIKA CZCIONEK ---
+# NOWY FOLDER GŁÓWNY DĘBOGÓRY (zawiera podfoldery)
+ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
+
+# --- LOGIKA CZCIONEK (Awaryjna Helvetica -> Lora) ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 fonts_loaded = False
@@ -46,37 +49,51 @@ try:
 except Exception:
     pass
 
-# --- STYLE CSS ---
+# --- STYLE CSS DLA INTERFEJSU ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=PT+Sans:wght@400;700&display=swap');
     .stApp {{ background-color: {CI['white']}; font-family: 'PT Sans', sans-serif; }}
-    h1, h2, h3 {{ font-family: 'Lora', serif !important; color: {CI['dark_green']} !important; font-weight: 700 !important; }}
+    h1, h2, h3, h4 {{ font-family: 'Lora', serif !important; color: {CI['dark_green']} !important; font-weight: 700 !important; }}
     div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"] {{
-        background-color: {CI['light_green']}; padding: 2.5rem; border-left: 5px solid {CI['dark_green']}; margin-bottom: 1.5rem;
+        background-color: {CI['light_green']}; padding: 2rem; border-left: 5px solid {CI['dark_green']}; margin-bottom: 1.5rem;
     }}
     div.stButton > button {{
         background-color: {CI['dark_green']} !important; color: white !important;
-        border-radius: 0px !important; font-family: 'Lora', serif !important; padding: 0.8rem 3rem !important; text-transform: uppercase; letter-spacing: 2px;
+        border-radius: 0px !important; font-family: 'Lora', serif !important; padding: 0.8rem 3rem !important;
+        text-transform: uppercase; letter-spacing: 2px;
     }}
     div.stButton > button:hover {{ background-color: {CI['gray']} !important; }}
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC ---
+# --- GOOGLE DRIVE LOGIC (POBIERANIE TYLKO Z DĘBOGÓRY I PODFOLDERÓW) ---
 @st.cache_resource
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-def find_file_by_name(name_substring, mime_type=None):
+@st.cache_data(ttl=600)
+def fetch_all_debogora_files(root_id):
+    """Przeszukuje rekurencyjnie folder główny i wszystkie jego podfoldery."""
     service = get_drive_service()
-    query = f"name contains '{name_substring}' and trashed = false"
-    if mime_type:
-        query += f" and mimeType = '{mime_type}'"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    return results.get('files', [])
+    all_files = []
+    folders_to_search = [root_id]
+    
+    while folders_to_search:
+        current_folder = folders_to_search.pop(0)
+        query = f"'{current_folder}' in parents and trashed = false"
+        try:
+            results = service.files().list(q=query, fields="files(id, name, mimeType)").execute().get('files', [])
+            for f in results:
+                if f['mimeType'] == 'application/vnd.google-apps.folder':
+                    folders_to_search.append(f['id'])
+                else:
+                    all_files.append(f)
+        except Exception:
+            pass
+    return all_files
 
 def download_file(file_id):
     service = get_drive_service()
@@ -102,7 +119,7 @@ CENNIK = {
     },
     "wyzywienie": {"Brak": 0, "Śniadanie": 50, "Śniadanie + Obiadokolacja": 120},
     "atrakcje": {
-        "Kajaki": {"cena": 140, "typ": "osoba", "pdf": "Kajaki"},
+        "Kajaki": {"cena": 140, "typ": "osoba", "pdf": "Kajak"},
         "Sauna Olchowa": {"cena": 400, "typ": "grupa", "pdf": "Sauna"},
         "Balia": {"cena": 300, "typ": "grupa", "pdf": "Balia"},
         "Paintball": {"cena": 150, "typ": "osoba", "pdf": "Paintball"},
@@ -115,10 +132,10 @@ POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,
 # --- INTERFEJS ---
 try:
     logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
-    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 20px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
 except: pass
 
-st.markdown("<h1 style='text-align: center;'>System Ofertowania</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
 
@@ -138,12 +155,12 @@ def auto_alloc():
 pozycje_kosztowe = []
 
 with st.container():
-    st.subheader("1. Dane Klienta")
+    st.subheader("1. Dane Klienta i Termin")
     c1, c2 = st.columns(2)
     with c1:
         klient_imie = st.text_input("Imię i nazwisko *")
-        firma_n = st.text_input("Firma")
-        nip_n = st.text_input("NIP")
+        firma_n = st.text_input("Firma (opcjonalnie)")
+        nip_n = st.text_input("NIP (opcjonalnie)")
         st.number_input("Liczba osób", 1, 100, key="l_osob_total")
         st.button("🤖 Automatycznie rozmieść gości", on_click=auto_alloc)
     with c2:
@@ -164,28 +181,26 @@ with st.container():
         for p in p_sel:
             ile = st.number_input(f"{p}", 1, POKOJE_DWOREK[p], key=f"os_{p}")
             sum_os += ile
-            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_keyword": "Dębogóra"})
+            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "Dworek"})
     with col_dm:
         d_sel = st.multiselect("Domki", list(CENNIK["domki"].keys()), key="wybrane_d")
         for d in d_sel:
             ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
             sum_os += ile
             cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
-            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_keyword": CENNIK["domki"][d]["pdf"]})
+            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
 
 with st.container():
     st.subheader("3. Wyżywienie i Atrakcje")
-    c_w1, c_w2 = st.columns(2)
-    with c_w1:
-        wyz_opt = st.selectbox("Wyżywienie", list(CENNIK["wyzywienie"].keys()))
-        if wyz_opt != "Brak":
-            pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": wyz_opt, "Ilość": st.session_state.l_osob_total*dni, "Cena": CENNIK["wyzywienie"][wyz_opt], "Suma": CENNIK["wyzywienie"][wyz_opt]*st.session_state.l_osob_total*dni, "pdf_keyword": ""})
-    with c_w2:
-        atr_sel = st.multiselect("Dodaj atrakcje", list(CENNIK["atrakcje"].keys()))
-        for a in atr_sel:
-            a_data = CENNIK["atrakcje"][a]
-            ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
-            pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_keyword": a_data["pdf"]})
+    wyz_opt = st.selectbox("Wyżywienie", list(CENNIK["wyzywienie"].keys()))
+    if wyz_opt != "Brak":
+        pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": wyz_opt, "Ilość": st.session_state.l_osob_total*dni, "Cena": CENNIK["wyzywienie"][wyz_opt], "Suma": CENNIK["wyzywienie"][wyz_opt]*st.session_state.l_osob_total*dni, "pdf_kw": None})
+    
+    atr_sel = st.multiselect("Dodaj atrakcje (Karty PDF dołączą się automatycznie)", list(CENNIK["atrakcje"].keys()))
+    for a in atr_sel:
+        a_data = CENNIK["atrakcje"][a]
+        ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
+        pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
 
 # --- GENEROWANIE ---
 with st.container():
@@ -193,71 +208,105 @@ with st.container():
     df = pd.DataFrame(pozycje_kosztowe)
     if not df.empty:
         edf = st.data_editor(df, use_container_width=True, num_rows="dynamic")
-        if not fonts_loaded:
-            st.warning("Pliki Lora-Bold.ttf oraz PTSans-Regular.ttf nie zostały wykryte. Wygenerowany PDF użyje czcionek zastępczych.")
-            
+        
+        # WYŚWIETLENIE SUMY CAŁKOWITEJ W INTERFEJSIE
+        razem = edf["Suma"].sum()
+        st.markdown(f"<h3 style='color: {CI['dark_green']};'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
+        
         if st.button("GENERUJ FINALNY PDF"):
-            with st.spinner("Budowanie oferty..."):
-                merger = PdfWriter()
-                
-                # 1. OKŁADKA
-                okl_files = find_file_by_name("okładka")
-                if okl_files:
-                    try:
-                        ppt_stream = download_file(okl_files[0]['id'])
-                        prs = Presentation(ppt_stream)
-                        for slide in prs.slides:
-                            for shape in slide.shapes:
-                                if hasattr(shape, "text") and "{{nazwa firmy}}" in shape.text:
-                                    shape.text = shape.text.replace("{{nazwa firmy}}", firma_n if firma_n else klient_imie)
-                        prs.save("okladka.pptx")
-                        subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka.pptx"])
-                        merger.append("okladka.pdf")
-                    except Exception as e:
-                        st.error(f"Wystąpił problem z przetworzeniem okładki: {e}")
-                else:
-                    st.error("Nie znaleziono pliku z nazwą 'okładka' na Dysku Google.")
+            if not klient_imie:
+                st.error("Podaj imię i nazwisko klienta!")
+            else:
+                with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
+                    merger = PdfWriter()
+                    all_drive_files = fetch_all_debogora_files(ROOT_FOLDER_ID)
+                    
+                    # 1. OKŁADKA (zabezpieczona, szuka tylko w pobranych plikach Dębogóry)
+                    okladka_file = next((f for f in all_drive_files if 'okładka' in f['name'].lower() and 'presentation' in f['mimeType']), None)
+                    if okladka_file:
+                        try:
+                            ppt_stream = download_file(okladka_file['id'])
+                            prs = Presentation(ppt_stream)
+                            nazwa_docelowa = firma_n if firma_n else klient_imie
+                            for slide in prs.slides:
+                                for shape in slide.shapes:
+                                    if hasattr(shape, "text") and "{{nazwa firmy}}" in shape.text:
+                                        shape.text = shape.text.replace("{{nazwa firmy}}", nazwa_docelowa)
+                            prs.save("okladka_temp.pptx")
+                            subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
+                            merger.append("okladka_temp.pdf")
+                        except Exception as e:
+                            st.error(f"Błąd przetwarzania okładki: {e}")
+                    else:
+                        st.warning("Nie znaleziono pliku prezentacji okładki w folderach Dębogóry.")
 
-                # 2. AUTOMATYCZNE KARTY PRODUKTÓW
-                keywords = list(set([kw for kw in edf["pdf_keyword"].tolist() if kw]))
-                for kw in keywords:
-                    found = find_file_by_name(kw, mime_type='application/pdf')
-                    if found:
-                        merger.append(download_file(found[0]['id']))
+                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE
+                    keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
+                    for kw in keywords:
+                        # Szukaj pasującego pliku PDF w pobranej liście z Dysku
+                        matched_pdf = next((f for f in all_drive_files if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType']), None)
+                        if matched_pdf:
+                            merger.append(download_file(matched_pdf['id']))
 
-                # 3. STRONA OFERTOWA
-                buf = io.BytesIO()
-                doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-                
-                styles = getSampleStyleSheet()
-                header_style = ParagraphStyle('HeaderCI', parent=styles['Heading1'], fontName=FONT_HEADER, fontSize=24, textColor=colors.HexColor(CI['dark_green']), spaceAfter=20)
-                
-                elements = [Paragraph(f"Oferta: {firma_n if firma_n else klient_imie}", header_style), Spacer(1, 12)]
-                
-                t_data = [["Kategoria", "Usługa", "Ilość", "Suma"]]
-                for _, row in edf.iterrows():
-                    t_data.append([row["Kategoria"], row["Opis"], str(row["Ilość"]), f"{row['Suma']:.0f} zł"])
-                
-                t_data.append(["", "", "SUMA CAŁKOWITA:", f"{edf['Suma'].sum():.0f} zł"])
-                
-                table = Table(t_data, colWidths=[100, 250, 60, 100])
-                table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                    ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER),
-                    ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT),
-                    ('GRID', (0, 0), (-1, -2), 0.5, colors.HexColor(CI['dark_green'])),
-                    ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor(CI['light_green'])),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 11),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-                ]))
-                elements.append(table)
-                
-                doc.build(elements)
-                buf.seek(0)
-                merger.append(buf)
+                    # 3. ZAPROJEKTOWANA STRONA OFERTOWA (REPORTLAB)
+                    buf = io.BytesIO()
+                    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
+                    elements = []
+                    styles = getSampleStyleSheet()
 
-                final_pdf = io.BytesIO()
-                merger.write(final_pdf)
-                st.download_button("📥 POBIERZ KOMPLETNĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{klient_imie}.pdf", "application/pdf")
+                    # Logo na stronie ofertowej (jeśli istnieje)
+                    if os.path.exists("logo.png"):
+                        elements.append(RLImage("logo.png", width=120, height=60, kind='proportional'))
+                        elements.append(Spacer(1, 20))
+
+                    header_style = ParagraphStyle('HeaderCI', parent=styles['Heading1'], fontName=FONT_HEADER, fontSize=20, textColor=colors.HexColor(CI['dark_green']), spaceAfter=20)
+                    elements.append(Paragraph("PODSUMOWANIE KOSZTÓW", header_style))
+                    
+                    sub_style = ParagraphStyle('SubCI', parent=styles['Normal'], fontName=FONT_TEXT, fontSize=12, textColor=colors.HexColor(CI['gray']), spaceAfter=30)
+                    elements.append(Paragraph(f"Oferta przygotowana dla: <b>{firma_n if firma_n else klient_imie}</b><br/>Data wygenerowania: {date.today().strftime('%d.%m.%Y')}", sub_style))
+                    
+                    # Definicja i budowa estetycznej tabeli
+                    t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
+                    for _, row in edf.iterrows():
+                        t_data.append([row["Kategoria"], row["Opis"], str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
+                    
+                    # Wiersz podsumowujący
+                    t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
+                    
+                    table = Table(t_data, colWidths=[100, 230, 50, 90])
+                    
+                    # Zaawansowane style tabeli (CI)
+                    t_style = TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                        ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER),
+                        ('FONTSIZE', (0, 0), (-1, 0), 12),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('ALIGN', (1, 1), (1, -2), 'LEFT'), # Opisy wyrównane do lewej
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+                        ('TOPPADDING', (0, 0), (-1, -1), 10),
+                        ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT),
+                        # Stylizacja stopki (RAZEM)
+                        ('FONTNAME', (2, -1), (-1, -1), FONT_HEADER),
+                        ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])),
+                        ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
+                        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
+                    ])
+                    
+                    # Naprzemienne kolory wierszy (Zebra striping) dla czytelności
+                    for i in range(1, len(t_data) - 1):
+                        bg_color = colors.HexColor(CI['light_green']) if i % 2 == 0 else colors.white
+                        t_style.add('BACKGROUND', (0, i), (-1, i), bg_color)
+                        t_style.add('LINEBELOW', (0, i), (-1, i), 0.5, colors.HexColor("#d1d9cf"))
+
+                    table.setStyle(t_style)
+                    elements.append(table)
+                    
+                    doc.build(elements)
+                    buf.seek(0)
+                    merger.append(buf)
+
+                    final_pdf = io.BytesIO()
+                    merger.write(final_pdf)
+                    st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{klient_imie.replace(' ', '_')}.pdf", "application/pdf")
