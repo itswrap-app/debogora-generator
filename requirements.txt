@@ -3,3 +3,5 @@ pandas
 pypdf
 reportlab
 python-pptx
+google-api-python-client
+google-auth-oauthlib
