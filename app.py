@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials as SACredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from pptx import Presentation
-from pypdf import PdfWriter, PdfReader
+from pypdf import PdfWriter
 
 # ReportLab - Generowanie eleganckiego PDF
 from reportlab.lib.pagesizes import A4
@@ -31,10 +31,9 @@ CI = {
     "white": "#ffffff"
 }
 
-# NOWY FOLDER GŁÓWNY DĘBOGÓRY (zawiera podfoldery)
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
-# --- LOGIKA CZCIONEK (Awaryjna Helvetica -> Lora) ---
+# --- LOGIKA CZCIONEK ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 fonts_loaded = False
@@ -49,7 +48,7 @@ try:
 except Exception:
     pass
 
-# --- STYLE CSS DLA INTERFEJSU ---
+# --- STYLE CSS ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=PT+Sans:wght@400;700&display=swap');
@@ -67,16 +66,14 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC (POBIERANIE TYLKO Z DĘBOGÓRY I PODFOLDERÓW) ---
-@st.cache_resource
+# --- GOOGLE DRIVE LOGIC ---
+# Złagodzono i zoptymalizowano wyszukiwanie, usunięto Cache dla pewności działania
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=600)
 def fetch_all_debogora_files(root_id):
-    """Przeszukuje rekurencyjnie folder główny i wszystkie jego podfoldery."""
     service = get_drive_service()
     all_files = []
     folders_to_search = [root_id]
@@ -85,14 +82,18 @@ def fetch_all_debogora_files(root_id):
         current_folder = folders_to_search.pop(0)
         query = f"'{current_folder}' in parents and trashed = false"
         try:
-            results = service.files().list(q=query, fields="files(id, name, mimeType)").execute().get('files', [])
-            for f in results:
-                if f['mimeType'] == 'application/vnd.google-apps.folder':
-                    folders_to_search.append(f['id'])
-                else:
-                    all_files.append(f)
-        except Exception:
-            pass
+            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType)", pageSize=1000)
+            while request is not None:
+                results = request.execute()
+                files = results.get('files', [])
+                for f in files:
+                    if f['mimeType'] == 'application/vnd.google-apps.folder':
+                        folders_to_search.append(f['id'])
+                    else:
+                        all_files.append(f)
+                request = service.files().list_next(request, results)
+        except Exception as e:
+            st.error(f"Błąd dostępu do folderu: {e}")
     return all_files
 
 def download_file(file_id):
@@ -105,6 +106,21 @@ def download_file(file_id):
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh
+
+# --- DIAGNOSTYKA W PANELU BOCZNYM ---
+with st.sidebar:
+    st.subheader("🛠 Diagnostyka Google Drive")
+    st.write("Sprawdzanie połączenia...")
+    try:
+        wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
+        st.success(f"Połączono! Widzę plików: {len(wszystkie_pliki)}")
+        with st.expander("Lista widocznych plików"):
+            for p in wszystkie_pliki:
+                st.text(p['name'])
+        if len(wszystkie_pliki) == 0:
+            st.error("Brak plików! Upewnij się, że udostępniłeś folder dla e-maila z pliku secrets JSON.")
+    except Exception as e:
+        st.error(f"Błąd połączenia: {e}")
 
 # --- LOGIKA BIZNESOWA ---
 CENNIK = {
@@ -209,7 +225,6 @@ with st.container():
     if not df.empty:
         edf = st.data_editor(df, use_container_width=True, num_rows="dynamic")
         
-        # WYŚWIETLENIE SUMY CAŁKOWITEJ W INTERFEJSIE
         razem = edf["Suma"].sum()
         st.markdown(f"<h3 style='color: {CI['dark_green']};'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
         
@@ -219,10 +234,10 @@ with st.container():
             else:
                 with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
                     merger = PdfWriter()
-                    all_drive_files = fetch_all_debogora_files(ROOT_FOLDER_ID)
+                    # Używamy plików pobranych na potrzeby panelu bocznego
                     
-                    # 1. OKŁADKA (zabezpieczona, szuka tylko w pobranych plikach Dębogóry)
-                    okladka_file = next((f for f in all_drive_files if 'okładka' in f['name'].lower() and 'presentation' in f['mimeType']), None)
+                    # 1. OKŁADKA (szukamy czegokolwiek z "okładka" w nazwie)
+                    okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
                     if okladka_file:
                         try:
                             ppt_stream = download_file(okladka_file['id'])
@@ -238,13 +253,12 @@ with st.container():
                         except Exception as e:
                             st.error(f"Błąd przetwarzania okładki: {e}")
                     else:
-                        st.warning("Nie znaleziono pliku prezentacji okładki w folderach Dębogóry.")
+                        st.warning("Nie znaleziono pliku okładki. Upewnij się, że nazywa się np. 'AsystentAI_okładka_02.pptx'")
 
                     # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
                     for kw in keywords:
-                        # Szukaj pasującego pliku PDF w pobranej liście z Dysku
-                        matched_pdf = next((f for f in all_drive_files if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType']), None)
+                        matched_pdf = next((f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()), None)
                         if matched_pdf:
                             merger.append(download_file(matched_pdf['id']))
 
@@ -254,7 +268,6 @@ with st.container():
                     elements = []
                     styles = getSampleStyleSheet()
 
-                    # Logo na stronie ofertowej (jeśli istnieje)
                     if os.path.exists("logo.png"):
                         elements.append(RLImage("logo.png", width=120, height=60, kind='proportional'))
                         elements.append(Spacer(1, 20))
@@ -265,36 +278,30 @@ with st.container():
                     sub_style = ParagraphStyle('SubCI', parent=styles['Normal'], fontName=FONT_TEXT, fontSize=12, textColor=colors.HexColor(CI['gray']), spaceAfter=30)
                     elements.append(Paragraph(f"Oferta przygotowana dla: <b>{firma_n if firma_n else klient_imie}</b><br/>Data wygenerowania: {date.today().strftime('%d.%m.%Y')}", sub_style))
                     
-                    # Definicja i budowa estetycznej tabeli
                     t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
                     for _, row in edf.iterrows():
                         t_data.append([row["Kategoria"], row["Opis"], str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
                     
-                    # Wiersz podsumowujący
                     t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                     
                     table = Table(t_data, colWidths=[100, 230, 50, 90])
-                    
-                    # Zaawansowane style tabeli (CI)
                     t_style = TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                         ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER),
                         ('FONTSIZE', (0, 0), (-1, 0), 12),
                         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                        ('ALIGN', (1, 1), (1, -2), 'LEFT'), # Opisy wyrównane do lewej
+                        ('ALIGN', (1, 1), (1, -2), 'LEFT'),
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                         ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
                         ('TOPPADDING', (0, 0), (-1, -1), 10),
                         ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT),
-                        # Stylizacja stopki (RAZEM)
                         ('FONTNAME', (2, -1), (-1, -1), FONT_HEADER),
                         ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])),
                         ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
                         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
                     ])
                     
-                    # Naprzemienne kolory wierszy (Zebra striping) dla czytelności
                     for i in range(1, len(t_data) - 1):
                         bg_color = colors.HexColor(CI['light_green']) if i % 2 == 0 else colors.white
                         t_style.add('BACKGROUND', (0, i), (-1, i), bg_color)
