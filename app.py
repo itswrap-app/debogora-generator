@@ -2,6 +2,18 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
 import base64
+import os
+import subprocess
+import io
+
+# Importy do generowania i edycji plików
+from pptx import Presentation
+from pypdf import PdfWriter, PdfReader
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
@@ -31,7 +43,6 @@ st.markdown(f"""
         font-weight: 700 !important;
     }}
 
-    /* Kontenery sekcji */
     div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"] {{
         background-color: {CI['light_green']};
         padding: 2rem;
@@ -40,7 +51,6 @@ st.markdown(f"""
         margin-bottom: 1.5rem;
     }}
 
-    /* Przyciski */
     div.stButton > button {{
         background-color: {CI['dark_green']} !important;
         color: white !important;
@@ -59,7 +69,7 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- WYŚRODKOWANE LOGO (METODA HTML/BASE64) ---
+# --- WYŚRODKOWANE LOGO ---
 def get_base64_img(path):
     try:
         with open(path, "rb") as f:
@@ -84,7 +94,7 @@ else:
 st.markdown(f"<h1 style='text-align: center; margin-top: 0px;'>System Ofertowania</h1>", unsafe_allow_html=True)
 st.markdown(f"<p style='text-align: center; color: {CI['gray']}; font-style: italic; margin-bottom: 30px;'>Dwór Dębogóra & Domki Krovacja</p>", unsafe_allow_html=True)
 
-# --- LOGIKA BIZNESOWA ---
+# --- BAZA CENNIKA ---
 CENNIK = {
     "nocleg_1_noc": 220,
     "nocleg_2_noce": 170,
@@ -174,9 +184,6 @@ with st.container():
             suma_d = (cena_baza + doplata) * l_dni
             pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"Domek {d_name} ({ile_os} os.)", "Ilość": 1, "Cena": suma_d, "Suma": suma_d})
 
-    if (os_dw + os_dm) != l_osob_total:
-        st.warning(f"⚠️ Uwaga: Rozlokowano {os_dw + os_dm} osób, a grupa liczy {l_osob_total}!")
-
 # --- 3. WYŻYWIENIE ---
 with st.container():
     st.subheader("3. Wyżywienie")
@@ -198,7 +205,72 @@ with st.container():
             ile_g = st.number_input(f"Ilość (grupy/wynajmy) na: {a}", 1, 10, 1)
             pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile_g, "Cena": a_data["cena"], "Suma": ile_g * a_data["cena"]})
 
-# --- 5. PODSUMOWANIE ---
+# --- FUNKCJE POMOCNICZE (PPTX -> PDF -> MERGE) ---
+def zamien_tekst_w_prezentacji(ppt, stara_wartosc, nowa_wartosc):
+    for slide in ppt.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and stara_wartosc in shape.text:
+                shape.text = shape.text.replace(stara_wartosc, nowa_wartosc)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        if stara_wartosc in cell.text:
+                            cell.text = cell.text.replace(stara_wartosc, nowa_wartosc)
+
+def konwertuj_pptx_na_pdf(sciezka_pptx, folder_wyjsciowy):
+    try:
+        subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf", 
+            sciezka_pptx, "--outdir", folder_wyjsciowy
+        ], check=True)
+        return sciezka_pptx.replace(".pptx", ".pdf")
+    except Exception as e:
+        st.error(f"Błąd konwersji LibreOffice: {e}")
+        return None
+
+def generuj_pdf_tabela(df_dane, suma_calkowita, nazwa_klienta):
+    sciezka = "tabela_kosztowa_temp.pdf"
+    doc = SimpleDocTemplate(sciezka, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
+    elements = []
+    
+    ciemny_zielony = colors.HexColor("#00622f")
+    jasny_zielony = colors.HexColor("#e8ece6")
+    szary = colors.HexColor("#333333")
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], textColor=ciemny_zielony, fontSize=22, spaceAfter=20, alignment=1)
+    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], textColor=szary, fontSize=12, spaceAfter=30, alignment=1)
+    
+    elements.append(Paragraph("Podsumowanie Kosztów Ofertowych", title_style))
+    elements.append(Paragraph(f"Oferta przygotowana dla: <b>{nazwa_klienta}</b>", subtitle_style))
+    
+    tabela_dane = [["Kategoria", "Opis", "Ilość", "Cena Jedn.", "Suma"]]
+    for _, row in df_dane.iterrows():
+        tabela_dane.append([row["Kategoria"], row["Opis"], str(row["Ilość"]), f"{row['Cena']:.0f} zł", f"{row['Suma']:.0f} zł"])
+    tabela_dane.append(["", "", "", "RAZEM:", f"{suma_calkowita:.0f} zł"])
+    
+    t = Table(tabela_dane, colWidths=[80, 200, 50, 80, 80])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), ciemny_zielony),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('ALIGN', (1,1), (1,-2), 'LEFT'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12),
+        ('TOPPADDING', (0,0), (-1,0), 12),
+        ('BACKGROUND', (0,1), (-1,-2), jasny_zielony),
+        ('GRID', (0,0), (-1,-2), 1, colors.white),
+        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (3,-1), (-1,-1), ciemny_zielony),
+        ('ALIGN', (3,-1), (4,-1), 'CENTER'),
+        ('TOPPADDING', (0,-1), (-1,-1), 15),
+    ]))
+    
+    elements.append(t)
+    doc.build(elements)
+    return sciezka
+
+# --- 5. PODSUMOWANIE I GENEROWANIE ---
 with st.container():
     st.subheader("5. Kosztorys Ofertowy")
     df = pd.DataFrame(pozycje_kosztowe)
@@ -211,5 +283,55 @@ with st.container():
             if not klient_imie:
                 st.error("Błąd: Imię i nazwisko klienta jest wymagane!")
             else:
-                st.balloons()
-                st.success(f"Oferta dla {klient_imie} gotowa.")
+                with st.spinner("Przetwarzanie dokumentów..."):
+                    # Ustalenie nazwy firmy z priorytetem na wpisaną nazwę lub imię klienta
+                    nazwa_do_oferty = firma_n if firma_n else klient_imie
+
+                    # KROK 1: Modyfikacja okładki PPTX
+                    sciezka_okladka_pptx = "AsystentAI_okładka_02.pptx"
+                    
+                    if not os.path.exists(sciezka_okladka_pptx):
+                        st.error(f"Brak pliku bazowego '{sciezka_okladka_pptx}' w folderze z aplikacją!")
+                    else:
+                        ppt = Presentation(sciezka_okladka_pptx)
+                        # Reagujemy na różne warianty wpisania zmiennej
+                        zamien_tekst_w_prezentacji(ppt, "{{nazwa firmy}}", nazwa_do_oferty)
+                        zamien_tekst_w_prezentacji(ppt, "{{Nazwa_firmy}}", nazwa_do_oferty)
+                        
+                        zmodyfikowany_pptx = "okladka_temp.pptx"
+                        ppt.save(zmodyfikowany_pptx)
+
+                        # KROK 2: Konwersja PPTX -> PDF
+                        okladka_pdf = konwertuj_pptx_na_pdf(zmodyfikowany_pptx, ".")
+                        
+                        if okladka_pdf:
+                            # KROK 3: Generowanie tabeli cenowej do PDF
+                            tabela_pdf = generuj_pdf_tabela(edytowany_df, razem, nazwa_do_oferty)
+
+                            # KROK 4: Scalanie okładki i tabeli w jeden plik PDF
+                            merger = PdfWriter()
+                            merger.append(okladka_pdf)
+                            merger.append(tabela_pdf)
+
+                            output_filename = f"Oferta_Debogora_{nazwa_do_oferty.replace(' ', '_')}.pdf"
+                            with open(output_filename, "wb") as f_out:
+                                merger.write(f_out)
+
+                            # Opcjonalne sprzątanie plików tymczasowych
+                            try:
+                                os.remove(zmodyfikowany_pptx)
+                                os.remove(okladka_pdf)
+                                os.remove(tabela_pdf)
+                            except:
+                                pass
+
+                            # Przycisk pobierania gotowej połączonej oferty
+                            with open(output_filename, "rb") as final_pdf:
+                                st.download_button(
+                                    label="📥 POBIERZ SCALONĄ OFERTĘ PDF",
+                                    data=final_pdf,
+                                    file_name=output_filename,
+                                    mime="application/pdf",
+                                    type="primary"
+                                )
+                            st.success("Oferta wygenerowana i pomyślnie scalona!")
