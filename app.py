@@ -67,7 +67,6 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # --- GOOGLE DRIVE LOGIC ---
-# Złagodzono i zoptymalizowano wyszukiwanie, usunięto Cache dla pewności działania
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
     creds = SACredentials.from_service_account_info(info)
@@ -234,9 +233,8 @@ with st.container():
             else:
                 with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
                     merger = PdfWriter()
-                    # Używamy plików pobranych na potrzeby panelu bocznego
                     
-                    # 1. OKŁADKA (szukamy czegokolwiek z "okładka" w nazwie)
+                    # 1. OKŁADKA
                     okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
                     if okladka_file:
                         try:
@@ -253,14 +251,20 @@ with st.container():
                         except Exception as e:
                             st.error(f"Błąd przetwarzania okładki: {e}")
                     else:
-                        st.warning("Nie znaleziono pliku okładki. Upewnij się, że nazywa się np. 'AsystentAI_okładka_02.pptx'")
+                        st.warning("Nie znaleziono pliku okładki.")
 
-                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE
+                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE (Z PRIORYTETEM NA 'PREV')
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
                     for kw in keywords:
-                        matched_pdf = next((f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()), None)
-                        if matched_pdf:
-                            merger.append(download_file(matched_pdf['id']))
+                        matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
+                        if matched_files:
+                            prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
+                            if prev_files:
+                                selected_pdf = prev_files[0]
+                            else:
+                                selected_pdf = matched_files[0]
+                            
+                            merger.append(download_file(selected_pdf['id']))
 
                     # 3. ZAPROJEKTOWANA STRONA OFERTOWA (REPORTLAB)
                     buf = io.BytesIO()
