@@ -33,20 +33,24 @@ CI = {
 
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
-# --- LOGIKA CZCIONEK ---
+# --- LOGIKA CZCIONEK I POLSKICH ZNAKÓW ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 fonts_loaded = False
 
-try:
-    if os.path.exists('Lora-Bold.ttf') and os.path.exists('PTSans-Regular.ttf'):
-        pdfmetrics.registerFont(TTFont('Lora-Bold', 'Lora-Bold.ttf'))
-        pdfmetrics.registerFont(TTFont('PTSans-Regular', 'PTSans-Regular.ttf'))
+# Sprawdzamy czy pliki czcionek istnieją (uwaga na wielkość liter!)
+lora_path = 'Lora-Bold.ttf'
+ptsans_path = 'PTSans-Regular.ttf'
+
+if os.path.exists(lora_path) and os.path.exists(ptsans_path):
+    try:
+        pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
+        pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
         FONT_HEADER = 'Lora-Bold'
         FONT_TEXT = 'PTSans-Regular'
         fonts_loaded = True
-except Exception:
-    pass
+    except Exception as e:
+        st.error(f"Błąd rejestracji czcionki: {e}")
 
 # --- STYLE CSS ---
 st.markdown(f"""
@@ -91,8 +95,8 @@ def fetch_all_debogora_files(root_id):
                     else:
                         all_files.append(f)
                 request = service.files().list_next(request, results)
-        except Exception as e:
-            st.error(f"Błąd dostępu do folderu: {e}")
+        except Exception:
+            pass
     return all_files
 
 def download_file(file_id):
@@ -106,20 +110,34 @@ def download_file(file_id):
     fh.seek(0)
     return fh
 
+# Precyzyjna zamiana tekstu w PPTX (zachowuje style!)
+def replace_text_in_pptx(prs, search_str, repl_str):
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        if search_str in run.text:
+                            run.text = run.text.replace(search_str, repl_str)
+
 # --- DIAGNOSTYKA W PANELU BOCZNYM ---
 with st.sidebar:
-    st.subheader("🛠 Diagnostyka Google Drive")
-    st.write("Sprawdzanie połączenia...")
+    st.subheader("🛠 Diagnostyka systemu")
+    
+    # Sprawdzanie czcionek
+    st.markdown("**Status czcionek CI:**")
+    if fonts_loaded:
+        st.success("✅ Lora i PT Sans załadowane poprawnie.")
+    else:
+        st.error("❌ Brak plików czcionek! Upewnij się, że pliki na GitHub nazywają się dokładnie: `Lora-Bold.ttf` oraz `PTSans-Regular.ttf`. PDF użyje zastępczej czcionki, która może nie czytać polskich znaków.")
+        
+    st.markdown("**Status Google Drive:**")
     try:
         wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
-        st.success(f"Połączono! Widzę plików: {len(wszystkie_pliki)}")
-        with st.expander("Lista widocznych plików"):
-            for p in wszystkie_pliki:
-                st.text(p['name'])
-        if len(wszystkie_pliki) == 0:
-            st.error("Brak plików! Upewnij się, że udostępniłeś folder dla e-maila z pliku secrets JSON.")
+        st.success(f"✅ Połączono! Widzę plików: {len(wszystkie_pliki)}")
     except Exception as e:
-        st.error(f"Błąd połączenia: {e}")
+        st.error(f"❌ Błąd połączenia Drive: {e}")
+        wszystkie_pliki = []
 
 # --- LOGIKA BIZNESOWA ---
 CENNIK = {
@@ -190,18 +208,15 @@ with st.container():
     st.subheader("2. Zakwaterowanie")
     stawka_dw = CENNIK["nocleg_1_noc"] if dni == 1 else CENNIK["nocleg_2_noce"]
     col_dw, col_dm = st.columns(2)
-    sum_os = 0
     with col_dw:
         p_sel = st.multiselect("Dworek", list(POKOJE_DWOREK.keys()), key="wybrane_p")
         for p in p_sel:
             ile = st.number_input(f"{p}", 1, POKOJE_DWOREK[p], key=f"os_{p}")
-            sum_os += ile
             pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "Dworek"})
     with col_dm:
         d_sel = st.multiselect("Domki", list(CENNIK["domki"].keys()), key="wybrane_d")
         for d in d_sel:
             ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
-            sum_os += ile
             cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
             pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
 
@@ -211,7 +226,7 @@ with st.container():
     if wyz_opt != "Brak":
         pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": wyz_opt, "Ilość": st.session_state.l_osob_total*dni, "Cena": CENNIK["wyzywienie"][wyz_opt], "Suma": CENNIK["wyzywienie"][wyz_opt]*st.session_state.l_osob_total*dni, "pdf_kw": None})
     
-    atr_sel = st.multiselect("Dodaj atrakcje (Karty PDF dołączą się automatycznie)", list(CENNIK["atrakcje"].keys()))
+    atr_sel = st.multiselect("Dodaj atrakcje", list(CENNIK["atrakcje"].keys()))
     for a in atr_sel:
         a_data = CENNIK["atrakcje"][a]
         ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
@@ -234,24 +249,23 @@ with st.container():
                 with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
                     merger = PdfWriter()
                     
-                    # 1. OKŁADKA
+                    # 1. OKŁADKA (z zachowaniem stylów)
                     okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
                     if okladka_file:
                         try:
                             ppt_stream = download_file(okladka_file['id'])
                             prs = Presentation(ppt_stream)
                             nazwa_docelowa = firma_n if firma_n else klient_imie
-                            for slide in prs.slides:
-                                for shape in slide.shapes:
-                                    if hasattr(shape, "text") and "{{nazwa firmy}}" in shape.text:
-                                        shape.text = shape.text.replace("{{nazwa firmy}}", nazwa_docelowa)
+                            
+                            replace_text_in_pptx(prs, "{{nazwa firmy}}", nazwa_docelowa)
+                            
                             prs.save("okladka_temp.pptx")
                             subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
                             merger.append("okladka_temp.pdf")
                         except Exception as e:
                             st.error(f"Błąd przetwarzania okładki: {e}")
                     else:
-                        st.warning("Nie znaleziono pliku okładki.")
+                        st.warning("Nie znaleziono pliku okładki. Zostanie pominięta.")
 
                     # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE (Z PRIORYTETEM NA 'PREV')
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
@@ -259,14 +273,13 @@ with st.container():
                         matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
                         if matched_files:
                             prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
-                            if prev_files:
-                                selected_pdf = prev_files[0]
-                            else:
-                                selected_pdf = matched_files[0]
-                            
-                            merger.append(download_file(selected_pdf['id']))
+                            selected_pdf = prev_files[0] if prev_files else matched_files[0]
+                            try:
+                                merger.append(download_file(selected_pdf['id']))
+                            except Exception as e:
+                                st.warning(f"Nie udało się pobrać pliku dla: {kw}")
 
-                    # 3. ZAPROJEKTOWANA STRONA OFERTOWA (REPORTLAB)
+                    # 3. STRONA OFERTOWA (REPORTLAB) - Odporna na polskie znaki, jeśli czcionki są wgrane
                     buf = io.BytesIO()
                     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                     elements = []
@@ -284,7 +297,7 @@ with st.container():
                     
                     t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
                     for _, row in edf.iterrows():
-                        t_data.append([row["Kategoria"], row["Opis"], str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
+                        t_data.append([str(row["Kategoria"]), str(row["Opis"]), str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
                     
                     t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                     
@@ -314,9 +327,12 @@ with st.container():
                     table.setStyle(t_style)
                     elements.append(table)
                     
-                    doc.build(elements)
-                    buf.seek(0)
-                    merger.append(buf)
+                    try:
+                        doc.build(elements)
+                        buf.seek(0)
+                        merger.append(buf)
+                    except Exception as e:
+                        st.error(f"Błąd generowania tabeli (prawdopodobnie brak polskich znaków w czcionce zastępczej). Wgraj Lora-Bold.ttf! Szczegóły: {e}")
 
                     final_pdf = io.BytesIO()
                     merger.write(final_pdf)
