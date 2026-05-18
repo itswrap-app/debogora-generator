@@ -33,24 +33,27 @@ CI = {
 
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
-# --- LOGIKA CZCIONEK I POLSKICH ZNAKÓW ---
+# --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 fonts_loaded = False
+available_ttfs = []
 
-# Sprawdzamy czy pliki czcionek istnieją (uwaga na wielkość liter!)
-lora_path = 'Lora-Bold.ttf'
-ptsans_path = 'PTSans-Regular.ttf'
+try:
+    available_ttfs = [f for f in os.listdir('.') if f.lower().endswith('.ttf')]
+    
+    # Szukaj plików niezależnie od wielkości liter
+    lora_path = next((f for f in available_ttfs if 'lora' in f.lower()), None)
+    ptsans_path = next((f for f in available_ttfs if 'pt' in f.lower() and 'sans' in f.lower()), None)
 
-if os.path.exists(lora_path) and os.path.exists(ptsans_path):
-    try:
+    if lora_path and ptsans_path:
         pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
         pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
         FONT_HEADER = 'Lora-Bold'
         FONT_TEXT = 'PTSans-Regular'
         fonts_loaded = True
-    except Exception as e:
-        st.error(f"Błąd rejestracji czcionki: {e}")
+except Exception as e:
+    st.error(f"Wystąpił techniczny błąd podczas rejestracji czcionek: {e}")
 
 # --- STYLE CSS ---
 st.markdown(f"""
@@ -110,7 +113,6 @@ def download_file(file_id):
     fh.seek(0)
     return fh
 
-# Precyzyjna zamiana tekstu w PPTX (zachowuje style!)
 def replace_text_in_pptx(prs, search_str, repl_str):
     for slide in prs.slides:
         for shape in slide.shapes:
@@ -124,20 +126,17 @@ def replace_text_in_pptx(prs, search_str, repl_str):
 with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
     
-    # Sprawdzanie czcionek
-    st.markdown("**Status czcionek CI:**")
+    st.markdown("**Status czcionek (Polskie znaki):**")
     if fonts_loaded:
-        st.success("✅ Lora i PT Sans załadowane poprawnie.")
+        st.success(f"✅ Czcionki załadowane. Użyte pliki: {lora_path}, {ptsans_path}")
     else:
-        st.error("❌ Brak plików czcionek! Upewnij się, że pliki na GitHub nazywają się dokładnie: `Lora-Bold.ttf` oraz `PTSans-Regular.ttf`. PDF użyje zastępczej czcionki, która może nie czytać polskich znaków.")
-        
-    st.markdown("**Status Google Drive:**")
-    try:
-        wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
-        st.success(f"✅ Połączono! Widzę plików: {len(wszystkie_pliki)}")
-    except Exception as e:
-        st.error(f"❌ Błąd połączenia Drive: {e}")
-        wszystkie_pliki = []
+        st.error("❌ Brak odpowiednich plików TTF. Polskie znaki mogą nie działać.")
+        st.write("Pliki .ttf wykryte w folderze głównym na GitHubie:")
+        if available_ttfs:
+            for ttf in available_ttfs:
+                st.code(ttf)
+        else:
+            st.warning("Nie znaleziono ŻADNYCH plików .ttf.")
 
 # --- LOGIKA BIZNESOWA ---
 CENNIK = {
@@ -246,40 +245,34 @@ with st.container():
             if not klient_imie:
                 st.error("Podaj imię i nazwisko klienta!")
             else:
-                with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
+                with st.spinner("Budowanie oferty..."):
                     merger = PdfWriter()
+                    wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
                     
-                    # 1. OKŁADKA (z zachowaniem stylów)
+                    # 1. OKŁADKA
                     okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
                     if okladka_file:
                         try:
                             ppt_stream = download_file(okladka_file['id'])
                             prs = Presentation(ppt_stream)
                             nazwa_docelowa = firma_n if firma_n else klient_imie
-                            
                             replace_text_in_pptx(prs, "{{nazwa firmy}}", nazwa_docelowa)
-                            
                             prs.save("okladka_temp.pptx")
                             subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
                             merger.append("okladka_temp.pdf")
                         except Exception as e:
-                            st.error(f"Błąd przetwarzania okładki: {e}")
-                    else:
-                        st.warning("Nie znaleziono pliku okładki. Zostanie pominięta.")
+                            st.error(f"Błąd okładki: {e}")
 
-                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE (Z PRIORYTETEM NA 'PREV')
+                    # 2. AUTOMATYCZNE KARTY PDF
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
                     for kw in keywords:
                         matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
                         if matched_files:
                             prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
                             selected_pdf = prev_files[0] if prev_files else matched_files[0]
-                            try:
-                                merger.append(download_file(selected_pdf['id']))
-                            except Exception as e:
-                                st.warning(f"Nie udało się pobrać pliku dla: {kw}")
+                            merger.append(download_file(selected_pdf['id']))
 
-                    # 3. STRONA OFERTOWA (REPORTLAB) - Odporna na polskie znaki, jeśli czcionki są wgrane
+                    # 3. TABELA (REPORTLAB)
                     buf = io.BytesIO()
                     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                     elements = []
@@ -327,12 +320,9 @@ with st.container():
                     table.setStyle(t_style)
                     elements.append(table)
                     
-                    try:
-                        doc.build(elements)
-                        buf.seek(0)
-                        merger.append(buf)
-                    except Exception as e:
-                        st.error(f"Błąd generowania tabeli (prawdopodobnie brak polskich znaków w czcionce zastępczej). Wgraj Lora-Bold.ttf! Szczegóły: {e}")
+                    doc.build(elements)
+                    buf.seek(0)
+                    merger.append(buf)
 
                     final_pdf = io.BytesIO()
                     merger.write(final_pdf)
