@@ -33,27 +33,26 @@ CI = {
 
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
-# --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
+# --- LOGIKA CZCIONEK ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 fonts_loaded = False
-available_ttfs = []
+font_error = ""
 
-try:
-    available_ttfs = [f for f in os.listdir('.') if f.lower().endswith('.ttf')]
-    
-    # Szukaj plików niezależnie od wielkości liter
-    lora_path = next((f for f in available_ttfs if 'lora' in f.lower()), None)
-    ptsans_path = next((f for f in available_ttfs if 'pt' in f.lower() and 'sans' in f.lower()), None)
+lora_path = 'Lora-Bold.ttf'
+ptsans_path = 'PTSans-Regular.ttf'
 
-    if lora_path and ptsans_path:
+if os.path.exists(lora_path) and os.path.exists(ptsans_path):
+    try:
         pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
         pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
         FONT_HEADER = 'Lora-Bold'
         FONT_TEXT = 'PTSans-Regular'
         fonts_loaded = True
-except Exception as e:
-    st.error(f"Wystąpił techniczny błąd podczas rejestracji czcionek: {e}")
+    except Exception as e:
+        font_error = str(e)
+else:
+    font_error = "Brak plików na serwerze."
 
 # --- STYLE CSS ---
 st.markdown(f"""
@@ -128,15 +127,10 @@ with st.sidebar:
     
     st.markdown("**Status czcionek (Polskie znaki):**")
     if fonts_loaded:
-        st.success(f"✅ Czcionki załadowane. Użyte pliki: {lora_path}, {ptsans_path}")
+        st.success(f"✅ Czcionki gotowe: Lora-Bold.ttf, PTSans-Regular.ttf")
     else:
-        st.error("❌ Brak odpowiednich plików TTF. Polskie znaki mogą nie działać.")
-        st.write("Pliki .ttf wykryte w folderze głównym na GitHubie:")
-        if available_ttfs:
-            for ttf in available_ttfs:
-                st.code(ttf)
-        else:
-            st.warning("Nie znaleziono ŻADNYCH plików .ttf.")
+        st.error(f"❌ Problem z czcionkami: {font_error}")
+        st.write("Wgraj pliki `.ttf` na GitHub z nazwami `Lora-Bold.ttf` i `PTSans-Regular.ttf`.")
 
 # --- LOGIKA BIZNESOWA ---
 CENNIK = {
@@ -261,9 +255,9 @@ with st.container():
                             subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
                             merger.append("okladka_temp.pdf")
                         except Exception as e:
-                            st.error(f"Błąd okładki: {e}")
+                            st.error(f"Błąd przetwarzania okładki: {e}")
 
-                    # 2. AUTOMATYCZNE KARTY PDF
+                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE (Z PRIORYTETEM NA 'PREV')
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
                     for kw in keywords:
                         matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
