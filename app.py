@@ -33,26 +33,37 @@ CI = {
 
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
-# --- LOGIKA CZCIONEK ---
+# --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
+FONT_TEXT_BOLD = 'Helvetica-Bold'
 fonts_loaded = False
 font_error = ""
 
 lora_path = 'Lora-Bold.ttf'
 ptsans_path = 'PTSans-Regular.ttf'
+ptsans_bold_path = 'PTSans-Bold.ttf'
 
 if os.path.exists(lora_path) and os.path.exists(ptsans_path):
     try:
         pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
         pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
+        
         FONT_HEADER = 'Lora-Bold'
         FONT_TEXT = 'PTSans-Regular'
+        
+        # Jeśli jest też wersja pogrubiona PT Sans, użyjmy jej
+        if os.path.exists(ptsans_bold_path):
+            pdfmetrics.registerFont(TTFont('PTSans-Bold', ptsans_bold_path))
+            FONT_TEXT_BOLD = 'PTSans-Bold'
+        else:
+            FONT_TEXT_BOLD = 'PTSans-Regular'
+            
         fonts_loaded = True
     except Exception as e:
         font_error = str(e)
 else:
-    font_error = "Brak odpowiednich plików .ttf w głównym folderze GitHuba."
+    font_error = "Brak plików Lora-Bold.ttf lub PTSans-Regular.ttf na serwerze."
 
 # --- STYLE CSS INTERFEJSU ---
 st.markdown(f"""
@@ -126,7 +137,7 @@ with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
     st.markdown("**Status czcionek:**")
     if fonts_loaded:
-        st.success("✅ Czcionki TrueType załadowane.")
+        st.success("✅ Czcionki załadowane. Format TTF poprawny.")
     else:
         st.error(f"❌ Aktywna czcionka zastępcza. Powód: {font_error}")
         
@@ -154,13 +165,19 @@ CENNIK = {
         "Sauna Olchowa": {"cena": 400, "typ": "grupa", "pdf": "Sauna"},
         "Balia": {"cena": 300, "typ": "grupa", "pdf": "Balia"},
         "Paintball": {"cena": 150, "typ": "osoba", "pdf": "Paintball"},
+        "Skarby Dębogóry": {"cena": 200, "typ": "osoba", "pdf": "Skarby"},
         "Ognisko": {"cena": 150, "typ": "grupa", "pdf": "Ognisko"}
     }
 }
 POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,9,10,12] else 2) for i in range(1,13)}
 
 # --- INTERFEJS APLIKACJI ---
-st.markdown("<h1 style='text-align: center;'>System Ofertowania</h1>", unsafe_allow_html=True)
+try:
+    logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
+    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
+except: pass
+
+st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
 
@@ -254,7 +271,7 @@ with st.container():
                         except Exception as e:
                             st.error(f"Błąd przetwarzania okładki: {e}")
 
-                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE (Z PRIORYTETEM NA 'PREV')
+                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE
                     keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
                     for kw in keywords:
                         matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
@@ -300,7 +317,7 @@ with st.container():
                         ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
                         ('TOPPADDING', (0, 0), (-1, -1), 10),
                         ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT),
-                        ('FONTNAME', (2, -1), (-1, -1), FONT_HEADER),
+                        ('FONTNAME', (2, -1), (-1, -1), FONT_TEXT_BOLD),
                         ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])),
                         ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
                         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
@@ -314,9 +331,12 @@ with st.container():
                     table.setStyle(t_style)
                     elements.append(table)
                     
-                    doc.build(elements)
-                    buf.seek(0)
-                    merger.append(buf)
+                    try:
+                        doc.build(elements)
+                        buf.seek(0)
+                        merger.append(buf)
+                    except Exception as e:
+                        st.error(f"Wystąpił problem ze znakami podczas budowania PDF: {e}")
 
                     final_pdf = io.BytesIO()
                     merger.write(final_pdf)
