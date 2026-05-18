@@ -52,9 +52,9 @@ if os.path.exists(lora_path) and os.path.exists(ptsans_path):
     except Exception as e:
         font_error = str(e)
 else:
-    font_error = "Brak plików na serwerze."
+    font_error = "Brak odpowiednich plików .ttf w głównym folderze GitHuba."
 
-# --- STYLE CSS ---
+# --- STYLE CSS INTERFEJSU ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=PT+Sans:wght@400;700&display=swap');
@@ -121,18 +121,23 @@ def replace_text_in_pptx(prs, search_str, repl_str):
                         if search_str in run.text:
                             run.text = run.text.replace(search_str, repl_str)
 
-# --- DIAGNOSTYKA W PANELU BOCZNYM ---
+# --- PANEL BOCZNY ---
 with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
-    
-    st.markdown("**Status czcionek (Polskie znaki):**")
+    st.markdown("**Status czcionek:**")
     if fonts_loaded:
-        st.success(f"✅ Czcionki gotowe: Lora-Bold.ttf, PTSans-Regular.ttf")
+        st.success("✅ Czcionki TrueType załadowane.")
     else:
-        st.error(f"❌ Problem z czcionkami: {font_error}")
-        st.write("Wgraj pliki `.ttf` na GitHub z nazwami `Lora-Bold.ttf` i `PTSans-Regular.ttf`.")
+        st.error(f"❌ Aktywna czcionka zastępcza. Powód: {font_error}")
+        
+    try:
+        wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
+        st.success(f"✅ Połączono z Drive. Liczba plików: {len(wszystkie_pliki)}")
+    except Exception as e:
+        st.error(f"❌ Błąd połączenia Drive: {e}")
+        wszystkie_pliki = []
 
-# --- LOGIKA BIZNESOWA ---
+# --- LOGIKA CENNIKA ---
 CENNIK = {
     "nocleg_1_noc": 220, "nocleg_2_noce": 170, "doplata_domek": 40,
     "domki": {
@@ -149,19 +154,13 @@ CENNIK = {
         "Sauna Olchowa": {"cena": 400, "typ": "grupa", "pdf": "Sauna"},
         "Balia": {"cena": 300, "typ": "grupa", "pdf": "Balia"},
         "Paintball": {"cena": 150, "typ": "osoba", "pdf": "Paintball"},
-        "Skarby Dębogóry": {"cena": 200, "typ": "osoba", "pdf": "Skarby"},
         "Ognisko": {"cena": 150, "typ": "grupa", "pdf": "Ognisko"}
     }
 }
 POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,9,10,12] else 2) for i in range(1,13)}
 
-# --- INTERFEJS ---
-try:
-    logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
-    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
-except: pass
-
-st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
+# --- INTERFEJS APLIKACJI ---
+st.markdown("<h1 style='text-align: center;'>System Ofertowania</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
 
@@ -225,13 +224,12 @@ with st.container():
         ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
         pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
 
-# --- GENEROWANIE ---
+# --- GENEROWANIE finalnego pliku ---
 with st.container():
     st.subheader("4. Kosztorys i Eksport")
     df = pd.DataFrame(pozycje_kosztowe)
     if not df.empty:
         edf = st.data_editor(df, use_container_width=True, num_rows="dynamic")
-        
         razem = edf["Suma"].sum()
         st.markdown(f"<h3 style='color: {CI['dark_green']};'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
         
@@ -239,9 +237,8 @@ with st.container():
             if not klient_imie:
                 st.error("Podaj imię i nazwisko klienta!")
             else:
-                with st.spinner("Budowanie oferty..."):
+                with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
                     merger = PdfWriter()
-                    wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
                     
                     # 1. OKŁADKA
                     okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
@@ -264,9 +261,12 @@ with st.container():
                         if matched_files:
                             prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
                             selected_pdf = prev_files[0] if prev_files else matched_files[0]
-                            merger.append(download_file(selected_pdf['id']))
+                            try:
+                                merger.append(download_file(selected_pdf['id']))
+                            except Exception:
+                                pass
 
-                    # 3. TABELA (REPORTLAB)
+                    # 3. ZAPROJEKTOWANA STRONA OFERTOWA (REPORTLAB)
                     buf = io.BytesIO()
                     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                     elements = []
