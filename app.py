@@ -20,6 +20,10 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+import reportlab.rl_config
+
+# Wymuszenie poprawnego kodowania w ReportLab
+reportlab.rl_config.warnOnMissingFontGlyphs = 0
 
 # --- KONFIGURACJA ---
 st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
@@ -34,6 +38,7 @@ CI = {
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
+# Domyślnie używamy standardowych czcionek, jeśli TTF zawiodą
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 FONT_TEXT_BOLD = 'Helvetica-Bold'
@@ -46,13 +51,13 @@ ptsans_bold_path = 'PTSans-Bold.ttf'
 
 if os.path.exists(lora_path) and os.path.exists(ptsans_path):
     try:
+        # Rejestrujemy czcionki TTF (ReportLab automatycznie użyje kodowania UTF-8 dla TTF)
         pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
         pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
         
         FONT_HEADER = 'Lora-Bold'
         FONT_TEXT = 'PTSans-Regular'
         
-        # Jeśli jest też wersja pogrubiona PT Sans, użyjmy jej
         if os.path.exists(ptsans_bold_path):
             pdfmetrics.registerFont(TTFont('PTSans-Bold', ptsans_bold_path))
             FONT_TEXT_BOLD = 'PTSans-Bold'
@@ -137,7 +142,7 @@ with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
     st.markdown("**Status czcionek:**")
     if fonts_loaded:
-        st.success("✅ Czcionki załadowane. Format TTF poprawny.")
+        st.success("✅ Czcionki TTF załadowane.")
     else:
         st.error(f"❌ Aktywna czcionka zastępcza. Powód: {font_error}")
         
@@ -241,6 +246,13 @@ with st.container():
         ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
         pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
 
+# --- FUNKCJA POMOCNICZA DLA ZNAKÓW ---
+# Dla pewności usuwamy białe znaki i wymuszamy poprawne typy dla ReportLab
+def safe_str(text):
+    if pd.isna(text):
+        return ""
+    return str(text).strip()
+
 # --- GENEROWANIE finalnego pliku ---
 with st.container():
     st.subheader("4. Kosztorys i Eksport")
@@ -297,11 +309,16 @@ with st.container():
                     elements.append(Paragraph("PODSUMOWANIE KOSZTÓW", header_style))
                     
                     sub_style = ParagraphStyle('SubCI', parent=styles['Normal'], fontName=FONT_TEXT, fontSize=12, textColor=colors.HexColor(CI['gray']), spaceAfter=30)
-                    elements.append(Paragraph(f"Oferta przygotowana dla: <b>{firma_n if firma_n else klient_imie}</b><br/>Data wygenerowania: {date.today().strftime('%d.%m.%Y')}", sub_style))
+                    nazwa = safe_str(firma_n) if firma_n else safe_str(klient_imie)
+                    elements.append(Paragraph(f"Oferta przygotowana dla: <b>{nazwa}</b><br/>Data wygenerowania: {date.today().strftime('%d.%m.%Y')}", sub_style))
                     
                     t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
                     for _, row in edf.iterrows():
-                        t_data.append([str(row["Kategoria"]), str(row["Opis"]), str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
+                        kat = safe_str(row["Kategoria"])
+                        opis = safe_str(row["Opis"])
+                        ilosc = safe_str(row["Ilość"])
+                        suma_str = f"{row['Suma']:,.0f} zł".replace(",", " ")
+                        t_data.append([kat, opis, ilosc, suma_str])
                     
                     t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                     
@@ -340,4 +357,6 @@ with st.container():
 
                     final_pdf = io.BytesIO()
                     merger.write(final_pdf)
-                    st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{klient_imie.replace(' ', '_')}.pdf", "application/pdf")
+                    
+                    safe_filename = "".join([c for c in safe_str(klient_imie) if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_")
+                    st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{safe_filename}.pdf", "application/pdf")
