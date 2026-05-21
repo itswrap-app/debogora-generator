@@ -1,8 +1,9 @@
 streamlit
 pandas
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+python-pptx
 pypdf
 reportlab
-python-pptx
-google-api-python-client
-google-auth-oauthlib
-openpyxl 
+openpyxl
