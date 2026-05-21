@@ -88,14 +88,13 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC (Z CACHE - KLUCZOWE DLA WYDAJNOŚCI) ---
+# --- GOOGLE DRIVE LOGIC (Z CACHE) ---
 @st.cache_resource
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-# CACHE: Zapamiętaj pliki na 10 minut, żeby nie skanować dysku przy każdym kliknięciu!
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_all_debogora_files(root_id):
     service = get_drive_service()
@@ -153,6 +152,7 @@ def replace_text_in_pptx(prs, search_str, repl_str):
                             run.text = run.text.replace(search_str, repl_str)
 
 def add_pdf_to_merger(merger, keyword, all_files):
+    if not keyword: return
     matched_files = [f for f in all_files if keyword.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
     if matched_files:
         prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
@@ -166,8 +166,7 @@ def safe_str(text):
     return "" if pd.isna(text) else str(text).strip()
 
 def get_price_from_df(usluga_name, df, default=0):
-    if df is None or df.empty:
-        return default
+    if df is None or df.empty: return default
     try:
         col_name = next((c for c in df.columns if 'nazwa' in c.lower() or 'usługa' in c.lower() or 'usluga' in c.lower()), None)
         col_price = next((c for c in df.columns if 'cena' in c.lower()), None)
@@ -175,10 +174,8 @@ def get_price_from_df(usluga_name, df, default=0):
             match = df[df[col_name].astype(str).str.strip().str.lower() == usluga_name.lower()]
             if not match.empty:
                 val = match.iloc[0][col_price]
-                if pd.notna(val):
-                    return float(val)
-    except Exception:
-        pass
+                if pd.notna(val): return float(val)
+    except Exception: pass
     return default
 
 # --- POŁĄCZENIE Z DYSKIEM ---
@@ -186,7 +183,7 @@ wszystkie_pliki = []
 cennik_file = None
 
 try:
-    with st.spinner("Skanowanie plików na Dysku Google (to potrwa chwilę tylko za pierwszym razem)..."):
+    with st.spinner("Skanowanie plików na Dysku Google..."):
         wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
@@ -201,7 +198,7 @@ if cennik_file and 'df_cennik' not in st.session_state:
         try:
             st.session_state.df_cennik = pd.read_excel(file_stream, engine='openpyxl')
         except Exception as e:
-            st.error(f"Błąd Excela: upewnij się, że 'openpyxl' jest w requirements.txt!")
+            st.error(f"Błąd Excela: openpyxl w requirements.txt!")
             st.session_state.df_cennik = None
     else:
         try:
@@ -214,18 +211,18 @@ elif 'df_cennik' not in st.session_state:
 
 df_c = st.session_state.df_cennik
 
-# --- DYNAMICZNY SŁOWNIK CENNIKA ---
+# --- ZAKTUALIZOWANY SŁOWNIK CENNIKA (IDEALNE MAPOWANIE DO PDF) ---
 CENNIK = {
     "nocleg_1_noc": get_price_from_df("Nocleg (1 noc)", df_c, 220),
     "nocleg_2_noce": get_price_from_df("Nocleg (2+ noce)", df_c, 170),
     "doplata_domek": 40,
     "domki": {
-        "Muuu 1": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "Krovacja"}, 
-        "Muuu 2": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "Krovacja"},
-        "Muuu 3": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "Krovacja"}, 
-        "Muuu 4": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "Krovacja"},
-        "Muuu 5": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "Krovacja"}, 
-        "Muuu 6": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "Krovacja"}
+        "Muuu 1": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "krovacja"}, 
+        "Muuu 2": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "krovacja"},
+        "Muuu 3": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "krovacja"}, 
+        "Muuu 4": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "krovacja"},
+        "Muuu 5": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "krovacja"}, 
+        "Muuu 6": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "krovacja"}
     },
     "wyzywienie": {
         "Śniadanie": {"cena": get_price_from_df("Śniadanie", df_c, 50), "pdf": "wyżywienie"},
@@ -233,48 +230,48 @@ CENNIK = {
         "Śniadanie + Obiadokolacja": {"cena": get_price_from_df("Śniadanie", df_c, 50) + get_price_from_df("Obiadokolacja", df_c, 70), "pdf": "wyżywienie"},
         "Serwis kawowy": {"cena": get_price_from_df("Serwis kawowy", df_c, 35), "pdf": "wyżywienie"},
         "Wiejskie jadło": {"cena": get_price_from_df("Wiejskie jadło (Podstawowe)", df_c, 45), "pdf": "wyżywienie"},
-        "Kolacja z rozszerzonym menu": {"cena": get_price_from_df("Biesiada wieczorna", df_c, 150), "pdf": "wyżywienie"}
+        "Kolacja z rozszerzonym menu": {"cena": get_price_from_df("Biesiada wieczorna", df_c, 150), "pdf": "Biesiada"}
     },
     "SPAstwisko": {
-        "Seans full experience": {"cena": get_price_from_df("Seans full experience", df_c, 0), "typ": "grupa", "pdf": "Seans"},
-        "Sauna olchowa": {"cena": get_price_from_df("Sauna Olchowa", df_c, 400), "typ": "grupa", "pdf": "Sauna"},
+        "Seans full experience": {"cena": get_price_from_df("Seans full experience", df_c, 0), "typ": "grupa", "pdf": "Seans saunowy"},
+        "Sauna olchowa": {"cena": get_price_from_df("Sauna Olchowa", df_c, 400), "typ": "grupa", "pdf": "Sauna olchowa"},
         "Staw kąpielowy": {"cena": get_price_from_df("Staw kąpielowy", df_c, 0), "typ": "grupa", "pdf": "Staw"},
         "Balia opalana drewnem": {"cena": get_price_from_df("Balia opalana drewnem", df_c, 300), "typ": "grupa", "pdf": "Balia"},
         "Sauny": {"cena": get_price_from_df("Wynajem na wyłączność", df_c, 450), "typ": "grupa", "pdf": "Sauny"},
-        "Masaż relaksacyjny": {"cena": get_price_from_df("Masaż relaksacyjny", df_c, 200), "typ": "osoba", "pdf": "Masaż"},
-        "Masaż gorącą świecą": {"cena": get_price_from_df("Masaż gorącą świecą", df_c, 210), "typ": "osoba", "pdf": "Masaż"},
-        "Masaż gorącymi kamieniami": {"cena": get_price_from_df("Masaż gorącymi kamieniami", df_c, 220), "typ": "osoba", "pdf": "Masaż"},
-        "Masaż klasyczny częściowy": {"cena": get_price_from_df("Masaż klasyczny częściowy", df_c, 180), "typ": "osoba", "pdf": "Masaż"},
-        "Masaż twarzy i dekoltu": {"cena": get_price_from_df("Masaż twarzy i dekoltu", df_c, 170), "typ": "osoba", "pdf": "Masaż"}
+        "Masaż relaksacyjny": {"cena": get_price_from_df("Masaż relaksacyjny", df_c, 200), "typ": "osoba", "pdf": "Masaże"},
+        "Masaż gorącą świecą": {"cena": get_price_from_df("Masaż gorącą świecą", df_c, 210), "typ": "osoba", "pdf": "Masaże"},
+        "Masaż gorącymi kamieniami": {"cena": get_price_from_df("Masaż gorącymi kamieniami", df_c, 220), "typ": "osoba", "pdf": "Masaże"},
+        "Masaż klasyczny częściowy": {"cena": get_price_from_df("Masaż klasyczny częściowy", df_c, 180), "typ": "osoba", "pdf": "Masaże"},
+        "Masaż twarzy i dekoltu": {"cena": get_price_from_df("Masaż twarzy i dekoltu", df_c, 170), "typ": "osoba", "pdf": "Masaże"}
     },
     "Atrakcje": {
-        "Łowcy krów": {"cena": get_price_from_df("Łowcy krów", df_c, 100), "typ": "osoba", "pdf": "Łowcy"},
+        "Łowcy krów": {"cena": get_price_from_df("Łowcy krów", df_c, 100), "typ": "osoba", "pdf": "Łowcy krów"},
         "Skarby Dębogóry": {"cena": get_price_from_df("Skarby Dębogóry", df_c, 200), "typ": "osoba", "pdf": "Skarby"},
-        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Safari"},
-        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Safari"},
+        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Krowie Safari"},
+        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Krowie Safari"},
         "Paintball": {"cena": get_price_from_df("Paintball", df_c, 150), "typ": "osoba", "pdf": "Paintball"},
-        "Kajaki": {"cena": get_price_from_df("Kajaki", df_c, 140), "typ": "osoba", "pdf": "Kajaki"},
-        "Rowery elektryczne krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery elektryczne krótka przejażdżka (2-3 godizny)", df_c, 0), "typ": "osoba", "pdf": "elektryczne"},
-        "Rowery elektryczne 1 dzień": {"cena": get_price_from_df("Rowery elektryczne 1 dzień", df_c, 0), "typ": "osoba", "pdf": "elektryczne"},
-        "Rowery elektryczne 2 dni": {"cena": get_price_from_df("Rowery elektryczne 2 dni", df_c, 0), "typ": "osoba", "pdf": "elektryczne"},
-        "Rowery elektryczne 3 dni": {"cena": get_price_from_df("Rowery elektryczne 3 dni", df_c, 0), "typ": "osoba", "pdf": "elektryczne"},
-        "Rowery MTB krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery MTB krótka przejażdżka (2-3 gozdiny)", df_c, 0), "typ": "osoba", "pdf": "MTB"},
-        "Rowery MTB 1 dzień": {"cena": get_price_from_df("Rowery MTB 1 dzień", df_c, 0), "typ": "osoba", "pdf": "MTB"},
-        "Rowery MTB 2 dni": {"cena": get_price_from_df("Rowery MTB 2 dni", df_c, 0), "typ": "osoba", "pdf": "MTB"},
-        "Rowery MTB 3 dni": {"cena": get_price_from_df("Rowery MTB 3 dni", df_c, 0), "typ": "osoba", "pdf": "MTB"},
+        "Kajaki": {"cena": get_price_from_df("Kajaki", df_c, 140), "typ": "osoba", "pdf": "Spływ kajakowy"},
+        "Rowery elektryczne krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery elektryczne krótka przejażdżka (2-3 godizny)", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery elektryczne 1 dzień": {"cena": get_price_from_df("Rowery elektryczne 1 dzień", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery elektryczne 2 dni": {"cena": get_price_from_df("Rowery elektryczne 2 dni", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery elektryczne 3 dni": {"cena": get_price_from_df("Rowery elektryczne 3 dni", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery MTB krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery MTB krótka przejażdżka (2-3 gozdiny)", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery MTB 1 dzień": {"cena": get_price_from_df("Rowery MTB 1 dzień", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery MTB 2 dni": {"cena": get_price_from_df("Rowery MTB 2 dni", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
+        "Rowery MTB 3 dni": {"cena": get_price_from_df("Rowery MTB 3 dni", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
         "Ognisko": {"cena": get_price_from_df("Ognisko", df_c, 150), "typ": "grupa", "pdf": "Ognisko"},
-        "Punkt widokowy": {"cena": get_price_from_df("Punkt widokowy", df_c, 0), "typ": "grupa", "pdf": "widokowy"},
-        "Łączka cielaczków": {"cena": get_price_from_df("Łączka cielaczków", df_c, 0), "typ": "grupa", "pdf": "cielaczków"},
-        "Atrakcje na wodzie": {"cena": get_price_from_df("Atrakcje na wodzie", df_c, 0), "typ": "grupa", "pdf": "wodzie"},
-        "Złów i wypuść": {"cena": get_price_from_df("Złow i wypuść", df_c, 0), "typ": "grupa", "pdf": "Złów"},
+        "Punkt widokowy": {"cena": get_price_from_df("Punkt widokowy", df_c, 0), "typ": "grupa", "pdf": "Punkt widokowy"},
+        "Łączka cielaczków": {"cena": get_price_from_df("Łączka cielaczków", df_c, 0), "typ": "grupa", "pdf": "Łączka cielaczków"},
+        "Atrakcje na wodzie": {"cena": get_price_from_df("Atrakcje na wodzie", df_c, 0), "typ": "grupa", "pdf": "Atrakcje na wodzie"},
+        "Złów i wypuść": {"cena": get_price_from_df("Złow i wypuść", df_c, 0), "typ": "grupa", "pdf": "Złów i wypuść"},
         "Grzybobranie": {"cena": get_price_from_df("Grzybobranie", df_c, 0), "typ": "grupa", "pdf": "Grzybobranie"},
-        "Roztańczony las": {"cena": get_price_from_df("Roztańczony las", df_c, 0), "typ": "grupa", "pdf": "Roztańczony"},
-        "Drawieński PN (3h)": {"cena": get_price_from_df("Drawieński PN (3h)", df_c, 0), "typ": "grupa", "pdf": "Drawieński"},
-        "Drawieński PN (6h)": {"cena": get_price_from_df("Drawieński PN (6h)", df_c, 0), "typ": "grupa", "pdf": "Drawieński"}
+        "Roztańczony las": {"cena": get_price_from_df("Roztańczony las", df_c, 0), "typ": "grupa", "pdf": "Roztańczony las"},
+        "Drawieński PN (3h)": {"cena": get_price_from_df("Drawieński PN (3h)", df_c, 0), "typ": "grupa", "pdf": "Drawieński PN"},
+        "Drawieński PN (6h)": {"cena": get_price_from_df("Drawieński PN (6h)", df_c, 0), "typ": "grupa", "pdf": "Drawieński PN"}
     },
     "Biznes": {
-        "Blok konferencyjny": {"cena": get_price_from_df("Blok konferencyjny", df_c, 0), "typ": "grupa", "pdf": "Blok"},
-        "Wynajem sali": {"cena": get_price_from_df("Wynajem sali", df_c, 0), "typ": "grupa", "pdf": "Wynajem"},
+        "Blok konferencyjny": {"cena": get_price_from_df("Blok konferencyjny", df_c, 0), "typ": "grupa", "pdf": "Blok konferencyjny"},
+        "Wynajem sali": {"cena": get_price_from_df("Wynajem sali", df_c, 0), "typ": "grupa", "pdf": "Wynajem sali"},
         "Przejazd grupy (do 23 os.)": {"cena": get_price_from_df("Przejazd grupy (do 23 os.)", df_c, 0), "typ": "grupa", "pdf": "Przejazd"},
         "Przejazd grupy (do 50 os.)": {"cena": get_price_from_df("Przejazd grupy (do 50 os.)", df_c, 0), "typ": "grupa", "pdf": "Przejazd"}
     }
@@ -289,19 +286,6 @@ with st.sidebar:
     
     if wszystkie_pliki:
         st.success(f"✅ Połączono z Drive. Liczba plików: {len(wszystkie_pliki)}")
-        
-        # POBIERANIE LISTY PLIKÓW
-        pliki_pdf = [p['name'] for p in wszystkie_pliki if 'pdf' in p['mimeType'].lower()]
-        lista_txt = "Lista plików PDF na Twoim dysku:\n" + "\n".join(pliki_pdf)
-        st.download_button(
-            label="📥 POBIERZ LISTĘ PLIKÓW PDF (wyślij mi to!)",
-            data=lista_txt,
-            file_name="moje_pliki_pdf.txt",
-            mime="text/plain",
-            type="primary"
-        )
-        
-        # Odświeżanie Cache Dysku
         if st.button("🔄 Wymuś ponowne skanowanie Dysku"):
             fetch_all_debogora_files.clear()
             st.rerun()
@@ -374,13 +358,13 @@ with tab1:
             p_sel = st.multiselect("Dworek", list(POKOJE_DWOREK.keys()), key="wybrane_p")
             for p in p_sel:
                 ile = st.number_input(f"{p}", 1, POKOJE_DWOREK[p], key=f"os_{p}")
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "Dworek"})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
         with col_dm:
             d_sel = st.multiselect("Domki", list(CENNIK["domki"].keys()), key="wybrane_d")
             for d in d_sel:
                 ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": "Krovacja"})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
 
     with st.container():
         st.subheader("3. Wyżywienie")
@@ -441,12 +425,12 @@ with tab1:
                                 subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
                                 merger.append("okladka_temp.pdf")
                             except Exception as e:
-                                st.error(f"Błąd okładki: {e}")
+                                pass
 
                         add_pdf_to_merger(merger, "powitalna", wszystkie_pliki)
 
-                        has_dworek = any(row["pdf_kw"] == "Dworek" for _, row in edf.iterrows())
-                        has_krovacja = any(row["pdf_kw"] == "Krovacja" for _, row in edf.iterrows())
+                        has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
+                        has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
                         if has_dworek: add_pdf_to_merger(merger, "dworek", wszystkie_pliki)
                         if has_krovacja: add_pdf_to_merger(merger, "krovacja", wszystkie_pliki)
 
