@@ -13,7 +13,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from pptx import Presentation
 from pypdf import PdfWriter
 
-# ReportLab - Generowanie eleganckiego PDF
+# ReportLab
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib import colors
@@ -24,7 +24,6 @@ import reportlab.rl_config
 
 reportlab.rl_config.warnOnMissingFontGlyphs = 0
 
-# --- KONFIGURACJA ---
 st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
 
 CI = {
@@ -71,10 +70,7 @@ if os.path.exists(lora_path) and text_font_path:
         fonts_loaded = True
     except Exception as e:
         font_error = str(e)
-else:
-    font_error = "Brak plików TTF na serwerze."
 
-# --- STYLE CSS INTERFEJSU ---
 st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=PT+Sans:wght@400;700&display=swap');
@@ -92,13 +88,15 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC ---
+# --- GOOGLE DRIVE LOGIC (Z CACHE - KLUCZOWE DLA WYDAJNOŚCI) ---
 @st.cache_resource
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
+# CACHE: Zapamiętaj pliki na 10 minut, żeby nie skanować dysku przy każdym kliknięciu!
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_all_debogora_files(root_id):
     service = get_drive_service()
     all_files = []
@@ -135,14 +133,12 @@ def download_file(file_id):
 def update_file_on_drive(file_id, df, file_name):
     service = get_drive_service()
     buffer = io.BytesIO()
-    
     if 'xlsx' in file_name.lower():
         df.to_excel(buffer, index=False, engine='openpyxl')
         mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     else:
         df.to_csv(buffer, index=False, encoding='utf-8')
         mimetype = 'text/csv'
-        
     buffer.seek(0)
     media = MediaIoBaseUpload(buffer, mimetype=mimetype, resumable=True)
     service.files().update(fileId=file_id, media_body=media).execute()
@@ -185,13 +181,13 @@ def get_price_from_df(usluga_name, df, default=0):
         pass
     return default
 
-# --- POŁĄCZENIE Z DYSKIEM I ŁADOWANIE CENNIKA ---
+# --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
 cennik_file = None
 
 try:
-    wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
-    # Szuka pliku zawierającego "cennik", priorytetyzuje format .xlsx
+    with st.spinner("Skanowanie plików na Dysku Google (to potrwa chwilę tylko za pierwszym razem)..."):
+        wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
     if cennik_files:
@@ -199,14 +195,13 @@ try:
 except Exception as e:
     st.sidebar.error(f"Błąd połączenia z Drive: {e}")
 
-# Pobieranie Cennika do sesji
 if cennik_file and 'df_cennik' not in st.session_state:
     file_stream = download_file(cennik_file['id'])
     if 'xlsx' in cennik_file['name'].lower():
         try:
             st.session_state.df_cennik = pd.read_excel(file_stream, engine='openpyxl')
         except Exception as e:
-            st.error(f"Nie można wczytać pliku Excel (upewnij się, że paczka openpyxl jest dodana do requirements.txt): {e}")
+            st.error(f"Błąd Excela: upewnij się, że 'openpyxl' jest w requirements.txt!")
             st.session_state.df_cennik = None
     else:
         try:
@@ -219,7 +214,7 @@ elif 'df_cennik' not in st.session_state:
 
 df_c = st.session_state.df_cennik
 
-# --- DYNAMICZNY SŁOWNIK CENNIKA Z BAZY DANYCH (CSV/EXCEL) ---
+# --- DYNAMICZNY SŁOWNIK CENNIKA ---
 CENNIK = {
     "nocleg_1_noc": get_price_from_df("Nocleg (1 noc)", df_c, 220),
     "nocleg_2_noce": get_price_from_df("Nocleg (2+ noce)", df_c, 170),
@@ -291,15 +286,28 @@ with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
     if fonts_loaded:
         st.success(f"✅ Czcionki TTF załadowane.")
-    else:
-        st.error(f"❌ Aktywna czcionka zastępcza. Powód: {font_error}")
-        
+    
     if wszystkie_pliki:
         st.success(f"✅ Połączono z Drive. Liczba plików: {len(wszystkie_pliki)}")
-        if cennik_file:
-            st.success(f"✅ Aktywny cennik: {cennik_file['name']}")
-        else:
-            st.warning("⚠️ Nie znaleziono pliku Cennika na dysku!")
+        
+        # POBIERANIE LISTY PLIKÓW
+        pliki_pdf = [p['name'] for p in wszystkie_pliki if 'pdf' in p['mimeType'].lower()]
+        lista_txt = "Lista plików PDF na Twoim dysku:\n" + "\n".join(pliki_pdf)
+        st.download_button(
+            label="📥 POBIERZ LISTĘ PLIKÓW PDF (wyślij mi to!)",
+            data=lista_txt,
+            file_name="moje_pliki_pdf.txt",
+            mime="text/plain",
+            type="primary"
+        )
+        
+        # Odświeżanie Cache Dysku
+        if st.button("🔄 Wymuś ponowne skanowanie Dysku"):
+            fetch_all_debogora_files.clear()
+            st.rerun()
+
+    if cennik_file:
+        st.success(f"✅ Aktywny cennik: {cennik_file['name']}")
 
 try:
     logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
@@ -327,8 +335,6 @@ tab1, tab2 = st.tabs(["📝 Kreator Ofert", "⚙️ Edycja Cennika Głównego"])
 
 with tab2:
     st.subheader("Edycja pliku Cennika (Google Drive)")
-    st.write("Wprowadzone tutaj zmiany po kliknięciu zapisu nadpiszą plik bezpośrednio na Dysku Google. Ceny natychmiast zaktualizują się w całej aplikacji.")
-    
     if df_c is not None:
         edited_df = st.data_editor(df_c, num_rows="dynamic", use_container_width=True)
         if st.button("💾 ZAPISZ ZMIANY NA DYSKU", type="primary"):
@@ -336,11 +342,9 @@ with tab2:
                 try:
                     update_file_on_drive(cennik_file['id'], edited_df, cennik_file['name'])
                     st.session_state.df_cennik = edited_df
-                    st.success("Zmiany zostały pomyślnie zapisane! Przejdź do zakładki Kreatora, aby użyć nowych cen.")
+                    st.success("Zmiany zapisane!")
                 except Exception as e:
-                    st.error(f"Błąd podczas zapisywania: {e}")
-    else:
-        st.warning("Nie załadowano pliku cennika z dysku.")
+                    st.error(f"Błąd zapisu: {e}")
 
 with tab1:
     pozycje_kosztowe = []
@@ -437,7 +441,7 @@ with tab1:
                                 subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
                                 merger.append("okladka_temp.pdf")
                             except Exception as e:
-                                st.error(f"Błąd przetwarzania okładki: {e}")
+                                st.error(f"Błąd okładki: {e}")
 
                         add_pdf_to_merger(merger, "powitalna", wszystkie_pliki)
 
@@ -512,7 +516,7 @@ with tab1:
                             buf.seek(0)
                             merger.append(buf)
                         except Exception as e:
-                            st.error(f"Problem w ReportLab: {e}")
+                            pass
 
                         add_pdf_to_merger(merger, "agenda", wszystkie_pliki)
                         add_pdf_to_merger(merger, "kontakt", wszystkie_pliki)
@@ -521,4 +525,4 @@ with tab1:
                         merger.write(final_pdf)
                         
                         safe_filename = "".join([c for c in safe_str(klient_imie) if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_")
-                        st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{safe_filename}.pdf", "application/pdf")
+                        st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{safe_filename}.pdf", "application/pdf", type="primary")
