@@ -22,7 +22,6 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import reportlab.rl_config
 
-# Wymuszenie poprawnego kodowania w ReportLab
 reportlab.rl_config.warnOnMissingFontGlyphs = 0
 
 # --- KONFIGURACJA ---
@@ -38,7 +37,6 @@ CI = {
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
-# Domyślnie używamy standardowych czcionek, jeśli TTF zawiodą
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 FONT_TEXT_BOLD = 'Helvetica-Bold'
@@ -46,29 +44,39 @@ fonts_loaded = False
 font_error = ""
 
 lora_path = 'Lora-Bold.ttf'
-ptsans_path = 'PTSans-Regular.ttf'
-ptsans_bold_path = 'PTSans-Bold.ttf'
+text_font_path = None
+text_font_bold_path = None
 
-if os.path.exists(lora_path) and os.path.exists(ptsans_path):
+# Priorytet dla Lato (niezawodne polskie znaki w ReportLab), potem PT Sans
+for f in ['Lato-Regular.ttf', 'PTSans-Regular.ttf']:
+    if os.path.exists(f):
+        text_font_path = f
+        break
+
+for f in ['Lato-Bold.ttf', 'PTSans-Bold.ttf']:
+    if os.path.exists(f):
+        text_font_bold_path = f
+        break
+
+if os.path.exists(lora_path) and text_font_path:
     try:
-        # Rejestrujemy czcionki TTF (ReportLab automatycznie użyje kodowania UTF-8 dla TTF)
         pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
-        pdfmetrics.registerFont(TTFont('PTSans-Regular', ptsans_path))
+        pdfmetrics.registerFont(TTFont('CI-Text', text_font_path))
         
         FONT_HEADER = 'Lora-Bold'
-        FONT_TEXT = 'PTSans-Regular'
+        FONT_TEXT = 'CI-Text'
         
-        if os.path.exists(ptsans_bold_path):
-            pdfmetrics.registerFont(TTFont('PTSans-Bold', ptsans_bold_path))
-            FONT_TEXT_BOLD = 'PTSans-Bold'
+        if text_font_bold_path:
+            pdfmetrics.registerFont(TTFont('CI-Text-Bold', text_font_bold_path))
+            FONT_TEXT_BOLD = 'CI-Text-Bold'
         else:
-            FONT_TEXT_BOLD = 'PTSans-Regular'
+            FONT_TEXT_BOLD = 'CI-Text'
             
         fonts_loaded = True
     except Exception as e:
         font_error = str(e)
 else:
-    font_error = "Brak plików Lora-Bold.ttf lub PTSans-Regular.ttf na serwerze."
+    font_error = "Brak plików TTF na serwerze."
 
 # --- STYLE CSS INTERFEJSU ---
 st.markdown(f"""
@@ -137,12 +145,28 @@ def replace_text_in_pptx(prs, search_str, repl_str):
                         if search_str in run.text:
                             run.text = run.text.replace(search_str, repl_str)
 
+def add_pdf_to_merger(merger, keyword, all_files):
+    """Funkcja szukająca pliku PDF na podstawie słowa kluczowego i doklejająca go do oferty."""
+    matched_files = [f for f in all_files if keyword.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
+    if matched_files:
+        prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
+        selected_pdf = prev_files[0] if prev_files else matched_files[0]
+        try:
+            merger.append(download_file(selected_pdf['id']))
+        except Exception:
+            pass
+
+def safe_str(text):
+    if pd.isna(text):
+        return ""
+    return str(text).strip()
+
 # --- PANEL BOCZNY ---
 with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
     st.markdown("**Status czcionek:**")
     if fonts_loaded:
-        st.success("✅ Czcionki TTF załadowane.")
+        st.success(f"✅ Czcionki załadowane: {text_font_path}")
     else:
         st.error(f"❌ Aktywna czcionka zastępcza. Powód: {font_error}")
         
@@ -153,7 +177,7 @@ with st.sidebar:
         st.error(f"❌ Błąd połączenia Drive: {e}")
         wszystkie_pliki = []
 
-# --- LOGIKA CENNIKA ---
+# --- LOGIKA CENNIKA Z NOWYMI KATEGORIAMI ---
 CENNIK = {
     "nocleg_1_noc": 220, "nocleg_2_noce": 170, "doplata_domek": 40,
     "domki": {
@@ -164,14 +188,56 @@ CENNIK = {
         "Muuu 5": {"baza": 700, "max_os": 3, "pdf": "Krovacja"}, 
         "Muuu 6": {"baza": 700, "max_os": 3, "pdf": "Krovacja"}
     },
-    "wyzywienie": {"Brak": 0, "Śniadanie": 50, "Śniadanie + Obiadokolacja": 120},
-    "atrakcje": {
-        "Kajaki": {"cena": 140, "typ": "osoba", "pdf": "Kajak"},
-        "Sauna Olchowa": {"cena": 400, "typ": "grupa", "pdf": "Sauna"},
-        "Balia": {"cena": 300, "typ": "grupa", "pdf": "Balia"},
-        "Paintball": {"cena": 150, "typ": "osoba", "pdf": "Paintball"},
+    "wyzywienie": {
+        "Śniadanie": {"cena": 50, "pdf": "wyżywienie"},
+        "Obiadokolacja": {"cena": 70, "pdf": "wyżywienie"},
+        "Śniadanie + Obiadokolacja": {"cena": 120, "pdf": "wyżywienie"},
+        "Serwis kawowy": {"cena": 0, "pdf": "wyżywienie"},
+        "Wiejskie jadło": {"cena": 0, "pdf": "wyżywienie"},
+        "Kolacja z rozszerzonym menu": {"cena": 0, "pdf": "wyżywienie"}
+    },
+    "SPAstwisko": {
+        "Seans full experience": {"cena": 0, "typ": "grupa", "pdf": "Seans"},
+        "Sauna olchowa": {"cena": 400, "typ": "grupa", "pdf": "Sauna"},
+        "Staw kąpielowy": {"cena": 0, "typ": "grupa", "pdf": "Staw"},
+        "Balia opalana drewnem": {"cena": 300, "typ": "grupa", "pdf": "Balia"},
+        "Sauny": {"cena": 0, "typ": "grupa", "pdf": "Sauny"},
+        "Masaż relaksacyjny": {"cena": 0, "typ": "osoba", "pdf": "Masaż"},
+        "Masaż gorącą świecą": {"cena": 0, "typ": "osoba", "pdf": "Masaż"},
+        "Masaż gorącymi kamieniami": {"cena": 0, "typ": "osoba", "pdf": "Masaż"},
+        "Masaż klasyczny częściowy": {"cena": 0, "typ": "osoba", "pdf": "Masaż"},
+        "Masaż twarzy i dekoltu": {"cena": 0, "typ": "osoba", "pdf": "Masaż"}
+    },
+    "Atrakcje": {
+        "Łowcy krów": {"cena": 100, "typ": "osoba", "pdf": "Łowcy"},
         "Skarby Dębogóry": {"cena": 200, "typ": "osoba", "pdf": "Skarby"},
-        "Ognisko": {"cena": 150, "typ": "grupa", "pdf": "Ognisko"}
+        "Krowie Safari Standard": {"cena": 100, "typ": "osoba", "pdf": "Safari"},
+        "Krowie Safari Rozszerzone": {"cena": 150, "typ": "osoba", "pdf": "Safari"},
+        "Paintball": {"cena": 150, "typ": "osoba", "pdf": "Paintball"},
+        "Kajaki": {"cena": 140, "typ": "osoba", "pdf": "Kajaki"},
+        "Rowery elektryczne krótka przejażdżka (2-3h)": {"cena": 0, "typ": "osoba", "pdf": "elektryczne"},
+        "Rowery elektryczne 1 dzień": {"cena": 0, "typ": "osoba", "pdf": "elektryczne"},
+        "Rowery elektryczne 2 dni": {"cena": 0, "typ": "osoba", "pdf": "elektryczne"},
+        "Rowery elektryczne 3 dni": {"cena": 0, "typ": "osoba", "pdf": "elektryczne"},
+        "Rowery MTB krótka przejażdżka (2-3h)": {"cena": 0, "typ": "osoba", "pdf": "MTB"},
+        "Rowery MTB 1 dzień": {"cena": 0, "typ": "osoba", "pdf": "MTB"},
+        "Rowery MTB 2 dni": {"cena": 0, "typ": "osoba", "pdf": "MTB"},
+        "Rowery MTB 3 dni": {"cena": 0, "typ": "osoba", "pdf": "MTB"},
+        "Ognisko": {"cena": 150, "typ": "grupa", "pdf": "Ognisko"},
+        "Punkt widokowy": {"cena": 0, "typ": "grupa", "pdf": "widokowy"},
+        "Łączka cielaczków": {"cena": 0, "typ": "grupa", "pdf": "cielaczków"},
+        "Atrakcje na wodzie": {"cena": 0, "typ": "grupa", "pdf": "wodzie"},
+        "Złów i wypuść": {"cena": 0, "typ": "grupa", "pdf": "Złów"},
+        "Grzybobranie": {"cena": 0, "typ": "grupa", "pdf": "Grzybobranie"},
+        "Roztańczony las": {"cena": 0, "typ": "grupa", "pdf": "Roztańczony"},
+        "Drawieński PN (3h)": {"cena": 0, "typ": "grupa", "pdf": "Drawieński"},
+        "Drawieński PN (6h)": {"cena": 0, "typ": "grupa", "pdf": "Drawieński"}
+    },
+    "Biznes": {
+        "Blok konferencyjny": {"cena": 0, "typ": "grupa", "pdf": "Blok"},
+        "Wynajem sali": {"cena": 0, "typ": "grupa", "pdf": "Wynajem"},
+        "Przejazd grupy (do 23 os.)": {"cena": 0, "typ": "grupa", "pdf": "Przejazd"},
+        "Przejazd grupy (do 50 os.)": {"cena": 0, "typ": "grupa", "pdf": "Przejazd"}
     }
 }
 POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,9,10,12] else 2) for i in range(1,13)}
@@ -232,30 +298,45 @@ with st.container():
         for d in d_sel:
             ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
             cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
-            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
+            pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": "Krovacja"})
 
 with st.container():
-    st.subheader("3. Wyżywienie i Atrakcje")
-    wyz_opt = st.selectbox("Wyżywienie", list(CENNIK["wyzywienie"].keys()))
-    if wyz_opt != "Brak":
-        pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": wyz_opt, "Ilość": st.session_state.l_osob_total*dni, "Cena": CENNIK["wyzywienie"][wyz_opt], "Suma": CENNIK["wyzywienie"][wyz_opt]*st.session_state.l_osob_total*dni, "pdf_kw": None})
+    st.subheader("3. Wyżywienie")
+    wyz_sel = st.multiselect("Wybierz opcje wyżywienia", list(CENNIK["wyzywienie"].keys()))
+    for w in wyz_sel:
+        w_data = CENNIK["wyzywienie"][w]
+        ile = st.number_input(f"Ilość porcji/osób: {w}", 1, 1000, st.session_state.l_osob_total)
+        pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": w, "Ilość": ile, "Cena": w_data["cena"], "Suma": ile*w_data["cena"], "pdf_kw": w_data["pdf"]})
+
+with st.container():
+    st.subheader("4. Oferta Dodatkowa (SPAstwisko, Atrakcje, Biznes)")
+    c_spa, c_atr, c_biz = st.columns(3)
     
-    atr_sel = st.multiselect("Dodaj atrakcje", list(CENNIK["atrakcje"].keys()))
-    for a in atr_sel:
-        a_data = CENNIK["atrakcje"][a]
-        ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1)
-        pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
+    with c_spa:
+        spa_sel = st.multiselect("SPAstwisko", list(CENNIK["SPAstwisko"].keys()))
+        for a in spa_sel:
+            a_data = CENNIK["SPAstwisko"][a]
+            ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"spa_{a}")
+            pozycje_kosztowe.append({"Kategoria": "SPAstwisko", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
+            
+    with c_atr:
+        atr_sel = st.multiselect("Atrakcje", list(CENNIK["Atrakcje"].keys()))
+        for a in atr_sel:
+            a_data = CENNIK["Atrakcje"][a]
+            ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"atr_{a}")
+            pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
 
-# --- FUNKCJA POMOCNICZA DLA ZNAKÓW ---
-# Dla pewności usuwamy białe znaki i wymuszamy poprawne typy dla ReportLab
-def safe_str(text):
-    if pd.isna(text):
-        return ""
-    return str(text).strip()
+    with c_biz:
+        biz_sel = st.multiselect("Biznes", list(CENNIK["Biznes"].keys()))
+        for a in biz_sel:
+            a_data = CENNIK["Biznes"][a]
+            ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"biz_{a}")
+            pozycje_kosztowe.append({"Kategoria": "Biznes", "Opis": a, "Ilość": ile, "Cena": a_data["cena"], "Suma": ile*a_data["cena"], "pdf_kw": a_data["pdf"]})
 
-# --- GENEROWANIE finalnego pliku ---
+# --- GENEROWANIE FINALNEGO PLIKU ---
 with st.container():
-    st.subheader("4. Kosztorys i Eksport")
+    st.subheader("5. Kosztorys i Eksport")
+    st.info("Ceny z wartością '0' możesz ręcznie wycenić bezpośrednio w poniższej tabeli przed wygenerowaniem PDF.")
     df = pd.DataFrame(pozycje_kosztowe)
     if not df.empty:
         edf = st.data_editor(df, use_container_width=True, num_rows="dynamic")
@@ -266,11 +347,11 @@ with st.container():
             if not klient_imie:
                 st.error("Podaj imię i nazwisko klienta!")
             else:
-                with st.spinner("Pobieranie plików z Dysku i budowanie oferty..."):
+                with st.spinner("Składanie 8-etapowej oferty..."):
                     merger = PdfWriter()
                     
-                    # 1. OKŁADKA
-                    okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower()), None)
+                    # ETAP 1: OKŁADKA (PPTX)
+                    okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
                     if okladka_file:
                         try:
                             ppt_stream = download_file(okladka_file['id'])
@@ -283,19 +364,28 @@ with st.container():
                         except Exception as e:
                             st.error(f"Błąd przetwarzania okładki: {e}")
 
-                    # 2. AUTOMATYCZNE KARTY PDF Z DYSKU GOOGLE
-                    keywords = list(set([row["pdf_kw"] for _, row in edf.iterrows() if pd.notna(row["pdf_kw"]) and row["pdf_kw"]]))
-                    for kw in keywords:
-                        matched_files = [f for f in wszystkie_pliki if kw.lower() in f['name'].lower() and 'pdf' in f['mimeType'].lower()]
-                        if matched_files:
-                            prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
-                            selected_pdf = prev_files[0] if prev_files else matched_files[0]
-                            try:
-                                merger.append(download_file(selected_pdf['id']))
-                            except Exception:
-                                pass
+                    # ETAP 2: Karta powitalna
+                    add_pdf_to_merger(merger, "powitalna", wszystkie_pliki)
 
-                    # 3. ZAPROJEKTOWANA STRONA OFERTOWA (REPORTLAB)
+                    # ETAP 3: Zakwaterowanie (osobno Dworek i Krovacja)
+                    has_dworek = any(row["pdf_kw"] == "Dworek" for _, row in edf.iterrows())
+                    has_krovacja = any(row["pdf_kw"] == "Krovacja" for _, row in edf.iterrows())
+                    if has_dworek: add_pdf_to_merger(merger, "dworek", wszystkie_pliki)
+                    if has_krovacja: add_pdf_to_merger(merger, "krovacja", wszystkie_pliki)
+
+                    # ETAP 4: Wyżywienie
+                    has_wyzywienie = any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows())
+                    if has_wyzywienie: add_pdf_to_merger(merger, "wyżywienie", wszystkie_pliki)
+
+                    # ETAP 5: Atrakcje (wstęp)
+                    add_pdf_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki)
+
+                    # ETAP 6: Karty wybranych atrakcji (SPAstwisko, Atrakcje, Biznes)
+                    atrakcje_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])]))
+                    for kw in atrakcje_kws:
+                        add_pdf_to_merger(merger, kw, wszystkie_pliki)
+
+                    # ETAP 7: Wycena (Tabela z systemu)
                     buf = io.BytesIO()
                     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                     elements = []
@@ -353,8 +443,15 @@ with st.container():
                         buf.seek(0)
                         merger.append(buf)
                     except Exception as e:
-                        st.error(f"Wystąpił problem ze znakami podczas budowania PDF: {e}")
+                        st.error(f"Problem w ReportLab: {e}")
 
+                    # ETAP 8: Przykładowa agenda
+                    add_pdf_to_merger(merger, "agenda", wszystkie_pliki)
+
+                    # ETAP 9: Kontakt
+                    add_pdf_to_merger(merger, "kontakt", wszystkie_pliki)
+
+                    # ZAPIS FINALNY
                     final_pdf = io.BytesIO()
                     merger.write(final_pdf)
                     
