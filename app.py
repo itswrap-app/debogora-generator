@@ -142,14 +142,30 @@ def update_file_on_drive(file_id, df, file_name):
     media = MediaIoBaseUpload(buffer, mimetype=mimetype, resumable=True)
     service.files().update(fileId=file_id, media_body=media).execute()
 
-def replace_text_in_pptx(prs, search_str, repl_str):
+# Inteligentne podmienianie ciągów w PPTX niezależnie od bloków runs
+def replace_text_in_pptx(prs, replacements):
     for slide in prs.slides:
         for shape in slide.shapes:
             if shape.has_text_frame:
                 for paragraph in shape.text_frame.paragraphs:
-                    for run in paragraph.runs:
-                        if search_str in run.text:
-                            run.text = run.text.replace(search_str, repl_str)
+                    if not paragraph.runs:
+                        continue
+                    full_text = "".join(run.text for run in paragraph.runs)
+                    original_text = full_text
+                    
+                    for k, v in replacements.items():
+                        if k in full_text:
+                            full_text = full_text.replace(k, str(v))
+                            
+                    # Zabezpieczenie przed podwójnymi klamrami na początku i końcu akapitu w okladka_03
+                    full_text = full_text.replace("{{Jest nam", "Jest nam")
+                    full_text = full_text.replace("stada!}}", "stada!")
+                    full_text = full_text.replace("stada! }}", "stada!")
+                    
+                    if full_text != original_text:
+                        paragraph.runs[0].text = full_text
+                        for i in range(1, len(paragraph.runs)):
+                            paragraph.runs[i].text = ""
 
 def add_pdf_to_merger(merger, keyword, all_files):
     if not keyword: return
@@ -211,7 +227,7 @@ elif 'df_cennik' not in st.session_state:
 
 df_c = st.session_state.df_cennik
 
-# --- ZAKTUALIZOWANY SŁOWNIK CENNIKA (IDEALNE MAPOWANIE DO PDF) ---
+# --- DYNAMICZNY SŁOWNIK CENNIKA ---
 CENNIK = {
     "nocleg_1_noc": get_price_from_df("Nocleg (1 noc)", df_c, 220),
     "nocleg_2_noce": get_price_from_df("Nocleg (2+ noce)", df_c, 170),
@@ -334,10 +350,11 @@ with tab1:
     pozycje_kosztowe = []
 
     with st.container():
-        st.subheader("1. Dane Klienta i Termin")
+        st.subheader("1. Główne Ustawienia i Dane Klienta")
         c1, c2 = st.columns(2)
         with c1:
-            klient_imie = st.text_input("Imię i nazwisko *")
+            marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"])
+            klient_imie = st.text_input("Imię i nazwisko osoby kontaktowej *")
             firma_n = st.text_input("Firma (opcjonalnie)")
             nip_n = st.text_input("NIP (opcjonalnie)")
             st.number_input("Liczba osób", 1, 100, key="l_osob_total")
@@ -409,40 +426,88 @@ with tab1:
             
             if st.button("GENERUJ FINALNY PDF"):
                 if not klient_imie:
-                    st.error("Podaj imię i nazwisko klienta!")
+                    st.error("Podaj imię i nazwisko klienta (Pole z gwiazdką)!")
                 else:
-                    with st.spinner("Składanie 8-etapowej oferty..."):
+                    with st.spinner("Składanie i konfiguracja oferty (Okładka 02 i Okładka 03)..."):
                         merger = PdfWriter()
                         
-                        okladka_file = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
-                        if okladka_file:
-                            try:
-                                ppt_stream = download_file(okladka_file['id'])
-                                prs = Presentation(ppt_stream)
-                                nazwa_docelowa = firma_n if firma_n else klient_imie
-                                replace_text_in_pptx(prs, "{{nazwa firmy}}", nazwa_docelowa)
-                                prs.save("okladka_temp.pptx")
-                                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_temp.pptx"])
-                                merger.append("okladka_temp.pdf")
-                            except Exception as e:
-                                pass
-
-                        add_pdf_to_merger(merger, "powitalna", wszystkie_pliki)
-
+                        nazwa_docelowa = firma_n if firma_n else klient_imie
+                        
+                        # LOGIKA ZMIENNYCH
                         has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
                         has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
+                        if has_dworek and has_krovacja:
+                            zakwaterowanie_txt = "domkach i pokojach"
+                        elif has_krovacja:
+                            zakwaterowanie_txt = "domkach"
+                        else:
+                            zakwaterowanie_txt = "pokojach"
+                            
+                        wybrane_atrakcje = [row["Opis"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
+                        if len(wybrane_atrakcje) >= 2:
+                            atrakcje_txt = f"{wybrane_atrakcje[0]} oraz {wybrane_atrakcje[1]}"
+                        elif len(wybrane_atrakcje) == 1:
+                            atrakcje_txt = f"{wybrane_atrakcje[0]} oraz otaczającą nas naturę"
+                        else:
+                            atrakcje_txt = "spokój, ciszę oraz bliskość natury"
+                            
+                        marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
+                        
+                        replacements = {
+                            "{{nazwa firmy}}": nazwa_docelowa,
+                            "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
+                            "{{domkach/pokojach}}": zakwaterowanie_txt,
+                            "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt
+                        }
+                        
+                        # ETAP 1: OKŁADKA 02 (Front page)
+                        okladka_02 = next((f for f in wszystkie_pliki if 'okładka_02' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                        if not okladka_02:
+                            okladka_02 = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower() and '03' not in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                            
+                        if okladka_02:
+                            try:
+                                ppt_stream = download_file(okladka_02['id'])
+                                prs = Presentation(ppt_stream)
+                                replace_text_in_pptx(prs, replacements)
+                                prs.save("okladka_02_temp.pptx")
+                                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_02_temp.pptx"])
+                                merger.append("okladka_02_temp.pdf")
+                            except Exception as e:
+                                st.error(f"Błąd przetwarzania okładki 02: {e}")
+
+                        # ETAP 2: OKŁADKA 03 (Welcome page)
+                        okladka_03 = next((f for f in wszystkie_pliki if 'okładka_03' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                        if okladka_03:
+                            try:
+                                ppt_stream = download_file(okladka_03['id'])
+                                prs = Presentation(ppt_stream)
+                                replace_text_in_pptx(prs, replacements)
+                                prs.save("okladka_03_temp.pptx")
+                                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_03_temp.pptx"])
+                                merger.append("okladka_03_temp.pdf")
+                            except Exception as e:
+                                st.error(f"Błąd przetwarzania okładki 03: {e}")
+                        else:
+                            add_pdf_to_merger(merger, "powitalna", wszystkie_pliki)
+
+                        # ETAP 3: ZAKWATEROWANIE
                         if has_dworek: add_pdf_to_merger(merger, "dworek", wszystkie_pliki)
                         if has_krovacja: add_pdf_to_merger(merger, "krovacja", wszystkie_pliki)
 
+                        # ETAP 4: WYŻYWIENIE
                         has_wyzywienie = any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows())
                         if has_wyzywienie: add_pdf_to_merger(merger, "wyżywienie", wszystkie_pliki)
 
+                        # ETAP 5: ATRAKCJE - KARTA WSTĘPNA
                         add_pdf_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki)
 
+                        # ETAP 6: INDYWIDUALNE KARTY ATRAKCJI
                         atrakcje_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])]))
                         for kw in atrakcje_kws:
                             add_pdf_to_merger(merger, kw, wszystkie_pliki)
 
+                        # ETAP 7: GENEROWANIE TABELI (REPORTLAB)
                         buf = io.BytesIO()
                         doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                         elements = []
@@ -502,9 +567,11 @@ with tab1:
                         except Exception as e:
                             pass
 
+                        # ETAP 8: AGENDA I KONTAKT
                         add_pdf_to_merger(merger, "agenda", wszystkie_pliki)
                         add_pdf_to_merger(merger, "kontakt", wszystkie_pliki)
 
+                        # ZAPIS DO PLIKU KOŃCOWEGO
                         final_pdf = io.BytesIO()
                         merger.write(final_pdf)
                         
