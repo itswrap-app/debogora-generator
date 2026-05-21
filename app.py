@@ -88,7 +88,7 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC (Z CACHE) ---
+# --- GOOGLE DRIVE LOGIC ---
 @st.cache_resource
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
@@ -142,41 +142,57 @@ def update_file_on_drive(file_id, df, file_name):
     media = MediaIoBaseUpload(buffer, mimetype=mimetype, resumable=True)
     service.files().update(fileId=file_id, media_body=media).execute()
 
+# --- PANCERNA ZAMIANA TEKSTU W PPTX ---
 def replace_text_in_pptx(prs, replacements):
     for slide in prs.slides:
         for shape in slide.shapes:
-            if shape.has_text_frame:
-                for paragraph in shape.text_frame.paragraphs:
-                    if not paragraph.runs:
-                        continue
-                    full_text = "".join(run.text for run in paragraph.runs)
-                    original_text = full_text
+            if not shape.has_text_frame:
+                continue
+            for paragraph in shape.text_frame.paragraphs:
+                if not paragraph.runs:
+                    continue
+                
+                # Pobierz cały tekst akapitu ignorując podziały (runs)
+                full_text = "".join(run.text for run in paragraph.runs)
+                original_text = full_text
+                
+                # 1. Usuń wszystkie klamry w całym tekście, żeby nic nie blokowało formatowania
+                full_text = full_text.replace("{{", "").replace("}}", "")
+                
+                # 2. Podmień docelowe frazy (teraz szukamy ich bez klamer)
+                for k, v in replacements.items():
+                    full_text = full_text.replace(k, str(v))
                     
-                    for k, v in replacements.items():
-                        if k in full_text:
-                            full_text = full_text.replace(k, str(v))
-                            
-                    full_text = full_text.replace("{{Jest nam", "Jest nam")
-                    full_text = full_text.replace("stada!}}", "stada!")
-                    full_text = full_text.replace("stada! }}", "stada!")
-                    
-                    if full_text != original_text:
-                        paragraph.runs[0].text = full_text
-                        for i in range(1, len(paragraph.runs)):
-                            paragraph.runs[i].text = ""
+                if full_text != original_text:
+                    # Wstaw zmieniony tekst do pierwszego bloku, resztę wyzeruj
+                    paragraph.runs[0].text = full_text
+                    for i in range(1, len(paragraph.runs)):
+                        paragraph.runs[i].text = ""
+
+# --- ODPORNOŚĆ NA POLSKIE ZNAKI ---
+def normalize_pl(text):
+    rep = {'ą':'a', 'ć':'c', 'ę':'e', 'ł':'l', 'ń':'n', 'ó':'o', 'ś':'s', 'ź':'z', 'ż':'z'}
+    res = str(text).lower()
+    for k, v in rep.items():
+        res = res.replace(k, v)
+    return res
 
 def add_pdf_to_merger(merger, keyword, all_files, open_streams, missing_cards):
     if not keyword: return
-    matched_files = [f for f in all_files if keyword.lower() in f['name'].lower() and ('.pdf' in f['name'].lower() or 'pdf' in f['mimeType'].lower())]
+    norm_kw = normalize_pl(keyword)
+    
+    # Szukaj pliku ignorując wielkość liter i polskie znaki w nazwie
+    matched_files = [f for f in all_files if norm_kw in normalize_pl(f['name']) and ('.pdf' in f['name'].lower() or 'pdf' in f['mimeType'].lower())]
+    
     if matched_files:
         prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
         selected_pdf = prev_files[0] if prev_files else matched_files[0]
         try:
             pdf_stream = download_file(selected_pdf['id'])
-            open_streams.append(pdf_stream) # Utrzymuje stream w pamięci
+            open_streams.append(pdf_stream)
             merger.append(PdfReader(pdf_stream, strict=False))
         except Exception as e:
-            st.error(f"⚠️ Błąd wczytywania pliku dla '{keyword}': {e}")
+            st.error(f"⚠️ Błąd wczytywania pliku '{keyword}': {e}")
     else:
         missing_cards.append(keyword)
 
@@ -304,7 +320,8 @@ with st.sidebar:
     
     if wszystkie_pliki:
         st.success(f"✅ Połączono z Drive. Liczba plików: {len(wszystkie_pliki)}")
-        if st.button("🔄 Wymuś ponowne skanowanie Dysku"):
+        # TEN PRZYCISK ROZWIĄZUJE PROBLEM NIEWIDOCZNYCH PLIKÓW!
+        if st.button("🔄 Wymuś ponowne skanowanie Dysku", type="primary"):
             fetch_all_debogora_files.clear()
             st.rerun()
 
@@ -450,11 +467,15 @@ with tab1:
                             
                         marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
                         
+                        # Definicja podmienianych fraz (bez klamer!)
                         replacements = {
-                            "{{nazwa firmy}}": nazwa_docelowa,
-                            "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
-                            "{{domkach/pokojach}}": zakwaterowanie_txt,
-                            "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt
+                            "nazwa firmy": nazwa_docelowa,
+                            "Dwór Dębogóra/Krovację": marka_wstawka,
+                            "Dwór Dębogóra / Krovację": marka_wstawka,
+                            "domkach/pokojach": zakwaterowanie_txt,
+                            "domkach / pokojach": zakwaterowanie_txt,
+                            "atrakcja oraz atrakcja": atrakcje_txt,
+                            "atrakcja i atrakcja": atrakcje_txt
                         }
                         
                         # ETAP 1: OKŁADKA 02
@@ -582,7 +603,7 @@ with tab1:
                         add_pdf_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards)
 
                         if missing_cards:
-                            st.warning(f"⚠️ Uwaga: Na Dysku Google brakuje następujących kart (zostały pominięte): {', '.join(missing_cards)}")
+                            st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono następujących kart: {', '.join(missing_cards)}")
 
                         # ZAPIS DO PLIKU KOŃCOWEGO
                         final_pdf = io.BytesIO()
