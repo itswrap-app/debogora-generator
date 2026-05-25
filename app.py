@@ -125,6 +125,7 @@ def download_file(file_id, retries=3):
         try:
             request = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
+            # Mniejsze chunki i retry łagodzi problem SSL RECORD_LAYER_FAILURE
             downloader = MediaIoBaseDownload(fh, request, chunksize=256*1024)
             done = False
             while done is False:
@@ -151,30 +152,31 @@ def update_file_on_drive(file_id, df, file_name):
 
 # --- PANCERNA ZAMIANA TEKSTU W PPTX (OBSŁUGA GRUP I TABEL) ---
 def process_shape(shape, replacements):
-    if hasattr(shape, "shapes"):
-        for subshape in shape.shapes:
-            process_shape(subshape, replacements)
-            
-    if getattr(shape, "has_table", False):
-        for row in shape.table.rows:
-            for cell in row.cells:
-                process_shape(cell, replacements)
-
-    if getattr(shape, "has_text_frame", False):
+    if shape.has_text_frame:
         for paragraph in shape.text_frame.paragraphs:
             if not paragraph.runs: continue
             
             full_text = "".join(run.text for run in paragraph.runs)
             orig = full_text
             
-            clean_text = full_text.replace("{{", "").replace("}}", "")
             for k, v in replacements.items():
-                clean_text = clean_text.replace(k, str(v))
-                    
-            if clean_text != orig:
-                paragraph.runs[0].text = clean_text
+                full_text = full_text.replace(k, str(v))
+                
+            if full_text != orig:
+                paragraph.runs[0].text = full_text
                 for i in range(1, len(paragraph.runs)):
                     paragraph.runs[i].text = ""
+                    
+    # Obsługa zgrupowanych kształtów (Group Shapes)
+    if hasattr(shape, "shapes"):
+        for subshape in shape.shapes:
+            process_shape(subshape, replacements)
+            
+    # Obsługa tabel (Tables)
+    if shape.has_table:
+        for row in shape.table.rows:
+            for cell in row.cells:
+                process_shape(cell, replacements)
 
 def replace_text_in_pptx(prs, replacements):
     for slide in prs.slides:
@@ -189,58 +191,23 @@ def normalize_pl(text):
         res = res.replace(k, v)
     return res
 
-# --- MAPOWANIE NAZW ---
-SYNONYMS = {
-    "atrakcje_wstęp": "atrakcje_",
-    "powitalna": "karta powitalna",
-    "agenda": "agenda",
-    "kontakt": "kontakt"
-}
-
-def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, replacements=None):
+def add_pdf_to_merger(merger, keyword, all_files, open_streams, missing_cards):
     if not keyword: return
+    norm_kw = normalize_pl(keyword)
     
-    search_term = SYNONYMS.get(keyword, keyword)
-    norm_search = normalize_pl(search_term)
+    matched_files = [f for f in all_files if norm_kw in normalize_pl(f['name']) and ('.pdf' in f['name'].lower() or 'pdf' in f['mimeType'].lower())]
     
-    # Obsługuje zarówno PPTX, PPT, jak i PDF
-    matches = [f for f in all_files if norm_search in normalize_pl(f['name']) and ('.pdf' in f['name'].lower() or 'pdf' in f['mimeType'].lower() or '.ppt' in f['name'].lower() or 'presentation' in f['mimeType'].lower())]
-    
-    if matches:
-        file_obj = next((f for f in matches if 'prev' in f['name'].lower()), matches[0])
+    if matched_files:
+        prev_files = [f for f in matched_files if 'prev' in f['name'].lower()]
+        selected_pdf = prev_files[0] if prev_files else matched_files[0]
         try:
-            fh = download_file(file_obj['id'])
-            fname = file_obj['name'].lower()
-            
-            if 'ppt' in fname or 'presentation' in file_obj['mimeType']:
-                temp_ppt = f"temp_{file_obj['id']}.pptx"
-                temp_pdf = f"temp_{file_obj['id']}.pdf"
-                
-                with open(temp_ppt, "wb") as f:
-                    f.write(fh.getvalue())
-                    
-                if replacements:
-                    prs = Presentation(temp_ppt)
-                    replace_text_in_pptx(prs, replacements)
-                    prs.save(temp_ppt)
-                    
-                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", temp_ppt], check=True)
-                
-                with open(temp_pdf, "rb") as f:
-                    pdf_bytes = f.read()
-                pdf_stream = io.BytesIO(pdf_bytes)
-                open_streams.append(pdf_stream)
-                merger.append(PdfReader(pdf_stream, strict=False))
-                
-            else:
-                open_streams.append(fh)
-                merger.append(PdfReader(fh, strict=False))
-                
+            pdf_stream = download_file(selected_pdf['id'])
+            open_streams.append(pdf_stream)
+            merger.append(PdfReader(pdf_stream, strict=False))
         except Exception as e:
-            st.error(f"⚠️ Błąd przetwarzania pliku '{keyword}' ({file_obj['name']}): {e}")
+            st.error(f"⚠️ Błąd wczytywania pliku '{keyword}': {e}")
     else:
-        if keyword not in missing_cards:
-            missing_cards.append(keyword)
+        missing_cards.append(keyword)
 
 def safe_str(text):
     return "" if pd.isna(text) else str(text).strip()
@@ -291,18 +258,18 @@ elif 'df_cennik' not in st.session_state:
 
 df_c = st.session_state.df_cennik
 
-# --- DYNAMICZNY SŁOWNIK CENNIKA W ZWIĄZKU Z NAZWAMI PLIKÓW ---
+# --- DYNAMICZNY SŁOWNIK CENNIKA ---
 CENNIK = {
     "nocleg_1_noc": get_price_from_df("Nocleg (1 noc)", df_c, 220),
     "nocleg_2_noce": get_price_from_df("Nocleg (2+ noce)", df_c, 170),
     "doplata_domek": 40,
     "domki": {
-        "Muuu 1": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "Zakwaterowanie_02"}, 
-        "Muuu 2": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "Zakwaterowanie_02"},
-        "Muuu 3": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "Zakwaterowanie_02"}, 
-        "Muuu 4": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "Zakwaterowanie_02"},
-        "Muuu 5": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "Zakwaterowanie_02"}, 
-        "Muuu 6": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "Zakwaterowanie_02"}
+        "Muuu 1": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "krovacja"}, 
+        "Muuu 2": {"baza": get_price_from_df("Muuu 1, 2", df_c, 700), "max_os": 4, "pdf": "krovacja"},
+        "Muuu 3": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "krovacja"}, 
+        "Muuu 4": {"baza": get_price_from_df("Muuu 3, 4", df_c, 1050), "max_os": 6, "pdf": "krovacja"},
+        "Muuu 5": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "krovacja"}, 
+        "Muuu 6": {"baza": get_price_from_df("Muuu 5, 6", df_c, 700), "max_os": 3, "pdf": "krovacja"}
     },
     "wyzywienie": {
         "Śniadanie": {"cena": get_price_from_df("Śniadanie", df_c, 50), "pdf": "wyżywienie"},
@@ -325,10 +292,10 @@ CENNIK = {
         "Masaż twarzy i dekoltu": {"cena": get_price_from_df("Masaż twarzy i dekoltu", df_c, 170), "typ": "osoba", "pdf": "Masaże"}
     },
     "Atrakcje": {
-        "Łowcy krów": {"cena": get_price_from_df("Łowcy krów", df_c, 100), "typ": "osoba", "pdf": "ZłodziejKrów"},
-        "Skarby Dębogóry": {"cena": get_price_from_df("Skarby Dębogóry", df_c, 200), "typ": "osoba", "pdf": "Skarby Dębogóry"},
-        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Krowie Safari dla grup_Standard"},
-        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Krowie Safari dla grup_Rozszerzona"},
+        "Łowcy krów": {"cena": get_price_from_df("Łowcy krów", df_c, 100), "typ": "osoba", "pdf": "Łowcy krów"},
+        "Skarby Dębogóry": {"cena": get_price_from_df("Skarby Dębogóry", df_c, 200), "typ": "osoba", "pdf": "Skarby"},
+        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Krowie Safari"},
+        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Krowie Safari"},
         "Paintball": {"cena": get_price_from_df("Paintball", df_c, 150), "typ": "osoba", "pdf": "Paintball"},
         "Kajaki": {"cena": get_price_from_df("Kajaki", df_c, 140), "typ": "osoba", "pdf": "Spływ kajakowy"},
         "Rowery elektryczne krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery elektryczne krótka przejażdżka (2-3 godizny)", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
@@ -439,7 +406,7 @@ with tab1:
             p_sel = st.multiselect("Dworek", list(POKOJE_DWOREK.keys()), key="wybrane_p")
             for p in p_sel:
                 ile = st.number_input(f"{p}", 1, POKOJE_DWOREK[p], key=f"os_{p}")
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "Zakwaterowanie_02"})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p} (os: {ile})", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
         with col_dm:
             d_sel = st.multiselect("Domki", list(CENNIK["domki"].keys()), key="wybrane_d")
             for d in d_sel:
@@ -492,15 +459,15 @@ with tab1:
                 if not klient_imie:
                     st.error("Podaj imię i nazwisko klienta (Pole z gwiazdką)!")
                 else:
-                    with st.spinner("Pobieranie plików, zamiana klamer i konwersja PPTX do PDF..."):
+                    with st.spinner("Pobieranie i kompilacja plików (To potrwa kilkanaście sekund)..."):
                         merger = PdfWriter()
                         open_streams = []
                         missing_cards = []
                         
                         nazwa_docelowa = firma_n if firma_n else klient_imie
                         
-                        has_dworek = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows() if "pokój" in str(row["Opis"]).lower())
-                        has_krovacja = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows() if "muuu" in str(row["Opis"]).lower())
+                        has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
+                        has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
                         if has_dworek and has_krovacja: zakwaterowanie_txt = "domkach i pokojach"
                         elif has_krovacja: zakwaterowanie_txt = "domkach"
                         else: zakwaterowanie_txt = "pokojach"
@@ -513,43 +480,77 @@ with tab1:
                         marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
                         
                         replacements = {
-                            "nazwa firmy": nazwa_docelowa,
-                            "Dwór Dębogóra/Krovację": marka_wstawka,
-                            "Dwór Dębogóra / Krovację": marka_wstawka,
-                            "domkach/pokojach": zakwaterowanie_txt,
-                            "domkach / pokojach": zakwaterowanie_txt,
-                            "atrakcja oraz atrakcja": atrakcje_txt,
-                            "atrakcja i atrakcja": atrakcje_txt,
-                            "Jest nam": "Jest nam",
-                            "stada!": "stada!"
+                            "{{nazwa firmy}}": nazwa_docelowa,
+                            "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
+                            "{{Dwór Dębogóra / Krovację}}": marka_wstawka,
+                            "{{domkach/pokojach}}": zakwaterowanie_txt,
+                            "{{domkach / pokojach}}": zakwaterowanie_txt,
+                            "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt,
+                            "{{atrakcja}} i {{atrakcja}}": atrakcje_txt,
+                            "{{Jest nam": "Jest nam",
+                            "stada!}}": "stada!"
                         }
                         
-                        # ETAP 1 i 2: OKŁADKI
-                        add_file_to_merger(merger, "okładka_02", wszystkie_pliki, open_streams, missing_cards, replacements)
-                        add_file_to_merger(merger, "okładka_03", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        # ETAP 1: OKŁADKA 02
+                        okladka_02 = next((f for f in wszystkie_pliki if 'okładka_02' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                        if not okladka_02:
+                            okladka_02 = next((f for f in wszystkie_pliki if 'okładka' in f['name'].lower() and '03' not in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                            
+                        if okladka_02:
+                            try:
+                                ppt_stream = download_file(okladka_02['id'])
+                                prs = Presentation(ppt_stream)
+                                replace_text_in_pptx(prs, replacements)
+                                prs.save("okladka_02_temp.pptx")
+                                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_02_temp.pptx"], check=True)
+                                
+                                with open("okladka_02_temp.pdf", "rb") as f:
+                                    pdf_bytes = f.read()
+                                cover_stream = io.BytesIO(pdf_bytes)
+                                open_streams.append(cover_stream)
+                                merger.append(PdfReader(cover_stream, strict=False))
+                            except FileNotFoundError:
+                                st.error("❌ Brak LibreOffice na serwerze! Pamiętaj o pliku packages.txt na GitHub.")
+                            except Exception as e:
+                                st.error(f"❌ Błąd okładki 02: {e}")
 
-                        # ETAP 3: KARTA POWITALNA
-                        add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        # ETAP 2: OKŁADKA 03
+                        okladka_03 = next((f for f in wszystkie_pliki if 'okładka_03' in f['name'].lower() and 'pdf' not in f['mimeType'].lower()), None)
+                        if okladka_03:
+                            try:
+                                ppt_stream = download_file(okladka_03['id'])
+                                prs = Presentation(ppt_stream)
+                                replace_text_in_pptx(prs, replacements)
+                                prs.save("okladka_03_temp.pptx")
+                                subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "okladka_03_temp.pptx"], check=True)
+                                
+                                with open("okladka_03_temp.pdf", "rb") as f:
+                                    pdf_bytes = f.read()
+                                cover3_stream = io.BytesIO(pdf_bytes)
+                                open_streams.append(cover3_stream)
+                                merger.append(PdfReader(cover3_stream, strict=False))
+                            except Exception as e:
+                                pass
+                        else:
+                            add_pdf_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards)
 
-                        # ETAP 4: ZAKWATEROWANIE
-                        has_zakwaterowanie = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows())
-                        if has_zakwaterowanie: 
-                            add_file_to_merger(merger, "Zakwaterowanie_02", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        # ETAP 3: ZAKWATEROWANIE
+                        if has_dworek: add_pdf_to_merger(merger, "dworek", wszystkie_pliki, open_streams, missing_cards)
+                        if has_krovacja: add_pdf_to_merger(merger, "krovacja", wszystkie_pliki, open_streams, missing_cards)
 
-                        # ETAP 5: WYŻYWIENIE
+                        # ETAP 4: WYŻYWIENIE
                         has_wyzywienie = any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows())
-                        if has_wyzywienie: 
-                            add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        if has_wyzywienie: add_pdf_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards)
 
-                        # ETAP 6: ATRAKCJE - KARTA WSTĘPNA
-                        add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        # ETAP 5: ATRAKCJE - KARTA WSTĘPNA
+                        add_pdf_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards)
 
-                        # ETAP 7: INDYWIDUALNE KARTY ATRAKCJI
+                        # ETAP 6: INDYWIDUALNE KARTY ATRAKCJI
                         atrakcje_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])]))
                         for kw in atrakcje_kws:
-                            add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, replacements)
+                            add_pdf_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards)
 
-                        # ETAP 8: GENEROWANIE TABELI WYCENY (REPORTLAB)
+                        # ETAP 7: GENEROWANIE TABELI (REPORTLAB)
                         buf = io.BytesIO()
                         doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
                         elements = []
@@ -610,12 +611,12 @@ with tab1:
                         except Exception as e:
                             st.error(f"Błąd tabeli wyceny: {e}")
 
-                        # ETAP 9: AGENDA I KONTAKT
-                        add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, replacements)
-                        add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, replacements)
+                        # ETAP 8: AGENDA I KONTAKT
+                        add_pdf_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards)
+                        add_pdf_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards)
 
                         if missing_cards:
-                            st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono następujących kart (pominęto w PDF): {', '.join(missing_cards)}")
+                            st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono następujących kart: {', '.join(missing_cards)}")
 
                         # ZAPIS DO PLIKU KOŃCOWEGO
                         final_pdf = io.BytesIO()
