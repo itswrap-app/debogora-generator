@@ -41,7 +41,6 @@ FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 FONT_TEXT_BOLD = 'Helvetica-Bold'
 fonts_loaded = False
-font_error = ""
 
 lora_path = 'Lora-Bold.ttf'
 text_font_path = None
@@ -69,8 +68,8 @@ if os.path.exists(lora_path) and text_font_path:
         else:
             FONT_TEXT_BOLD = 'CI-Text'
         fonts_loaded = True
-    except Exception as e:
-        font_error = str(e)
+    except Exception:
+        pass
 
 st.markdown(f"""
     <style>
@@ -96,8 +95,9 @@ def get_drive_service():
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_all_debogora_files(root_id):
+# ZMIENIONA NAZWA FUNKCJI - TO WYMUSI U STREAMLITA CAŁKOWITE ODŚWIEŻENIE LISTY PLIKÓW!
+@st.cache_data(ttl=60, show_spinner=False)
+def pobierz_wszystkie_pliki_z_dysku(root_id):
     service = get_drive_service()
     all_files = []
     folders_to_search = [root_id]
@@ -127,7 +127,7 @@ def download_file(file_id, retries=3):
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request, chunksize=256*1024)
             done = False
-            while done is False:
+            while not done:
                 status, done = downloader.next_chunk()
             fh.seek(0)
             return fh
@@ -181,7 +181,6 @@ def replace_text_in_pptx(prs, replacements):
         for shape in slide.shapes:
             process_shape(shape, replacements)
 
-# --- ODPORNOŚĆ NA POLSKIE ZNAKI I MAPOWANIE PLIKÓW ---
 def normalize_pl(text):
     rep = {'ą':'a', 'ć':'c', 'ę':'e', 'ł':'l', 'ń':'n', 'ó':'o', 'ś':'s', 'ź':'z', 'ż':'z'}
     res = str(text).lower()
@@ -189,7 +188,7 @@ def normalize_pl(text):
         res = res.replace(k, v)
     return res
 
-# --- MAPOWANIE NAZW ---
+# --- LUZNE MAPOWANIE NAZW (IGNORUJE ROZSZERZENIA) ---
 SYNONYMS = {
     "okładka": "okładka_02",
     "powitalna": "karta powitalna",
@@ -200,9 +199,11 @@ SYNONYMS = {
     "agenda": "agenda",
     "kontakt": "kontakt",
     "ZłodziejKrów": "złodziejkrów",
-    "Skarby Dębogóry": "skarby dębogóry",
-    "Krowie Safari dla grup_Standard": "safari dla grup_standard",
-    "Krowie Safari dla grup_Rozszerzona": "safari dla grup_rozszerzona",
+    "Skarby Dębogóry": "skarby",
+    "Krowie Safari dla grup_Standard": "safari",
+    "Krowie Safari dla grup_Rozszerzona": "rozszerzona",
+    "Safari_Standard": "safari",
+    "Safari_Rozszerzona": "rozszerzona",
     "Seans saunowy": "saunowy",
     "Sauna olchowa": "olchowa",
     "Staw": "staw",
@@ -229,15 +230,11 @@ def get_file_by_keyword(keyword, all_files):
     search_term = SYNONYMS.get(keyword, keyword)
     norm_search = normalize_pl(search_term)
     
-    matches = [
-        f for f in all_files 
-        if norm_search in normalize_pl(f['name']) and (
-            '.pdf' in f['name'].lower() or 'pdf' in f['mimeType'].lower() or 
-            '.ppt' in f['name'].lower() or 'presentation' in f['mimeType'].lower()
-        )
-    ]
+    # LUŹNE DOPASOWANIE: Znajdź plik, który po prostu zawiera słowo w nazwie. Zero blokad na .pdf czy .pptx
+    matches = [f for f in all_files if norm_search in normalize_pl(f['name'])]
     
     if matches:
+        # Jeśli jest kilka plików, wybieramy najpierw te z 'prev', a jak nie, to bierzemy pierwszy z brzegu
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
         return prev_matches[0] if prev_matches else matches[0]
     return None
@@ -274,7 +271,8 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
             open_streams.append(pdf_stream)
             merger.append(PdfReader(pdf_stream, strict=False))
         except Exception as e:
-            st.error(f"⚠️ Błąd wczytywania pliku '{keyword}': {e}")
+            st.error(f"⚠️ Błąd wczytywania/konwersji pliku '{keyword}' (plik: {file_obj['name']}): {e}")
+            missing_cards.append(keyword)
     else:
         if keyword not in missing_cards:
             missing_cards.append(keyword)
@@ -301,7 +299,7 @@ cennik_file = None
 
 try:
     with st.spinner("Skanowanie plików na Dysku Google..."):
-        wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
+        wszystkie_pliki = pobierz_wszystkie_pliki_z_dysku(ROOT_FOLDER_ID)
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
     if cennik_files:
@@ -364,8 +362,8 @@ CENNIK = {
     "Atrakcje": {
         "Łowcy krów": {"cena": get_price_from_df("Łowcy krów", df_c, 100), "typ": "osoba", "pdf": "ZłodziejKrów"},
         "Skarby Dębogóry": {"cena": get_price_from_df("Skarby Dębogóry", df_c, 200), "typ": "osoba", "pdf": "Skarby Dębogóry"},
-        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Krowie Safari dla grup_Standard"},
-        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Krowie Safari dla grup_Rozszerzona"},
+        "Krowie Safari Standard": {"cena": get_price_from_df("Krowie Safari Standard", df_c, 100), "typ": "osoba", "pdf": "Safari_Standard"},
+        "Krowie Safari Rozszerzone": {"cena": get_price_from_df("Krowie Safari Rozszerzone", df_c, 150), "typ": "osoba", "pdf": "Safari_Rozszerzona"},
         "Paintball": {"cena": get_price_from_df("Paintball", df_c, 150), "typ": "osoba", "pdf": "Paintball"},
         "Kajaki": {"cena": get_price_from_df("Kajaki", df_c, 140), "typ": "osoba", "pdf": "Spływ kajakowy"},
         "Rowery elektryczne krótka przejażdżka (2-3h)": {"cena": get_price_from_df("Rowery elektryczne krótka przejażdżka (2-3 godizny)", df_c, 0), "typ": "osoba", "pdf": "Rowery"},
@@ -398,14 +396,15 @@ POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,
 # --- PANEL BOCZNY DIAGNOSTYKI ---
 with st.sidebar:
     st.subheader("🛠 Diagnostyka systemu")
-    if fonts_loaded:
-        st.success(f"✅ Czcionki TTF załadowane.")
-    
     if wszystkie_pliki:
-        st.success(f"✅ Połączono z Drive. Liczba plików: {len(wszystkie_pliki)}")
+        st.success(f"✅ Połączono z Drive. Znaleziono plików: {len(wszystkie_pliki)}")
         if st.button("🔄 Wymuś ponowne skanowanie Dysku", type="primary"):
-            fetch_all_debogora_files.clear()
+            pobierz_wszystkie_pliki_z_dysku.clear()
             st.rerun()
+            
+        with st.expander("👁 Zobacz widoczne pliki (Debug)"):
+            for f in wszystkie_pliki:
+                st.write(f"📄 {f['name']}")
 
     if cennik_file:
         st.success(f"✅ Aktywny cennik: {cennik_file['name']}")
@@ -491,7 +490,7 @@ with tab1:
 
         overbooking_error = False
         if osoby_zadeklarowane > st.session_state.l_osob_total:
-            st.error(f"⚠️ UWAGA: Przydzieliłeś miejsca dla {osoby_zadeklarowane} osób, a zadeklarowano łącznie {st.session_state.l_osob_total} miejsc! Zmniejsz liczbę osób w polach wyżej.")
+            st.error(f"⚠️ UWAGA: Przydzieliłeś miejsca dla {osoby_zadeklarowane} osób, a zadeklarowano łącznie {st.session_state.l_osob_total} miejsc! Zmniejsz liczbę w polach wyżej.")
             overbooking_error = True
         elif osoby_zadeklarowane > 0 and osoby_zadeklarowane < st.session_state.l_osob_total:
             st.info(f"💡 Zostało {st.session_state.l_osob_total - osoby_zadeklarowane} osób bez przypisanego noclegu.")
@@ -542,15 +541,15 @@ with tab1:
                 if not klient_imie:
                     st.error("Podaj imię i nazwisko klienta (Pole z gwiazdką)!")
                 else:
-                    with st.spinner("Pobieranie plików, układanie kolejności stron i nakładanie tabeli wyceny..."):
+                    with st.spinner("Pobieranie plików PPTX i konwersja do PDF (To może zająć chwilę)..."):
                         merger = PdfWriter()
                         open_streams = []
                         missing_cards = []
                         
                         nazwa_docelowa = firma_n if firma_n else klient_imie
                         
-                        has_dworek = any("pokój" in str(row["Opis"]).lower() for _, row in edf.iterrows())
-                        has_krovacja = any("muuu" in str(row["Opis"]).lower() for _, row in edf.iterrows())
+                        has_dworek = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows() if "pokój" in str(row["Opis"]).lower())
+                        has_krovacja = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows() if "muuu" in str(row["Opis"]).lower())
                         if has_dworek and has_krovacja: zakwaterowanie_txt = "domkach i pokojach"
                         elif has_krovacja: zakwaterowanie_txt = "domkach"
                         else: zakwaterowanie_txt = "pokojach"
@@ -563,15 +562,15 @@ with tab1:
                         marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
                         
                         replacements = {
-                            "nazwa firmy": nazwa_docelowa,
-                            "Dwór Dębogóra/Krovację": marka_wstawka,
-                            "Dwór Dębogóra / Krovację": marka_wstawka,
-                            "domkach/pokojach": zakwaterowanie_txt,
-                            "domkach / pokojach": zakwaterowanie_txt,
-                            "atrakcja oraz atrakcja": atrakcje_txt,
-                            "atrakcja i atrakcja": atrakcje_txt,
-                            "Jest nam": "Jest nam",
-                            "stada!": "stada!"
+                            "{{nazwa firmy}}": nazwa_docelowa,
+                            "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
+                            "{{Dwór Dębogóra / Krovację}}": marka_wstawka,
+                            "{{domkach/pokojach}}": zakwaterowanie_txt,
+                            "{{domkach / pokojach}}": zakwaterowanie_txt,
+                            "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt,
+                            "{{atrakcja}} i {{atrakcja}}": atrakcje_txt,
+                            "{{Jest nam": "Jest nam",
+                            "stada!}}": "stada!"
                         }
                         
                         # 1. OKŁADKA
@@ -581,8 +580,7 @@ with tab1:
                         add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, replacements)
 
                         # 3. ZAKWATEROWANIE
-                        has_zakwaterowanie = any(row["pdf_kw"] == "Zakwaterowanie_02" for _, row in edf.iterrows())
-                        if has_zakwaterowanie: 
+                        if has_dworek or has_krovacja:
                             add_file_to_merger(merger, "Zakwaterowanie_02", wszystkie_pliki, open_streams, missing_cards, replacements)
 
                         # 4. WYŻYWIENIE
@@ -645,7 +643,7 @@ with tab1:
                             buf.seek(0)
                             open_streams.append(buf)
                             
-                            # Szukamy i nakładamy plik asystentAI_wycena.pptx jako tło
+                            # Nakładanie tabeli na tło
                             wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
                             if wycena_file:
                                 fh = download_file(wycena_file['id'])
@@ -673,7 +671,7 @@ with tab1:
                                 for i, fg_page in enumerate(fg_reader.pages):
                                     bg_idx = min(i, len(bg_reader.pages) - 1)
                                     bg_page = bg_reader.pages[bg_idx]
-                                    bg_page.merge_page(fg_page)
+                                    bg_page.merge_page(fg_page) # Sklejenie wygenerowanej tabeli z kartą PPTX
                                     merger.add_page(bg_page)
                             else:
                                 merger.append(PdfReader(buf, strict=False))
