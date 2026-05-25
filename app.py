@@ -142,7 +142,7 @@ def update_file_on_drive(file_id, df, file_name):
 
 # --- PANCERNA ZAMIANA TEKSTU W PPTX ---
 def process_shape(shape, replacements):
-    # Obsługa ramek tekstowych - bezbłędne czyszczenie znaczników
+    # Obsługa ramek tekstowych
     if hasattr(shape, "text_frame") and shape.text_frame is not None:
         for paragraph in shape.text_frame.paragraphs:
             if not paragraph.runs: continue
@@ -156,18 +156,17 @@ def process_shape(shape, replacements):
                     full_text = full_text.replace(k, str(v))
                     replaced = True
             
-            # Wyczyść poprzednie runs i wrzuć nowy połączony tekst
             if replaced and paragraph.runs:
                 paragraph.runs[0].text = full_text
                 for i in range(1, len(paragraph.runs)):
                     paragraph.runs[i].text = ""
 
-    # Obsługa grup kształtów
+    # Obsługa grup
     if hasattr(shape, "shapes"):
         for subshape in shape.shapes:
             process_shape(subshape, replacements)
             
-    # Obsługa tabel (jeżeli występują znaczniki w tabelach PPTX)
+    # Obsługa tabel
     if hasattr(shape, "has_table") and shape.has_table:
         for row in shape.table.rows:
             for cell in row.cells:
@@ -186,7 +185,7 @@ def normalize_pl(text):
     return res
 
 SYNONYMS = {
-    "okładka": "okładka", # Łapie wszystko co ma "okładka" w nazwie np. AsystentAI_okładka_03.pptx
+    "okładka": "okładka", 
     "powitalna": "karta powitalna", "dworek": "Zakwaterowanie_02", "krovacja": "Zakwaterowanie_02",
     "wyżywienie": "wyżywienie", "atrakcje_wstęp": "atrakcje", "wycena": "wycena", "agenda": "agenda", "kontakt": "kontakt",
     "ZłodziejKrów": "złodziej", "Łowcy krów": "złodziej", "Skarby": "skarby", "Krowie Safari": "safari",
@@ -240,7 +239,6 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
-# --- INTELIGENTNE POBIERANIE CZASU I CENY ---
 def get_price_data(usluga_name, df):
     if df is None or df.empty: return {"cena": 0, "czas": 0.0}
     try:
@@ -466,23 +464,26 @@ with tab1:
     with st.container():
         st.subheader("5. Generator Harmonogramu (Agenda)")
         
-        dostepny_czas = 4.0 if dni == 1 else (4.0 + (dni-1)*6.0)
+        # Obliczanie fizycznych dni wydarzenia zamiast samych nocy hotelowych
+        liczba_nocy = (d_out - d_in).days
+        liczba_dni = liczba_nocy + 1 if liczba_nocy > 0 else 1
+        
+        dostepny_czas = 4.0 if liczba_dni == 1 else (4.0 + (liczba_dni-2)*6.0 + 3.0)
         zajety_czas = sum(item["Czas"] for item in wybrane_atrakcje_agenda)
         
         if zajety_czas > dostepny_czas:
-            st.error(f"❌ OSTRZEŻENIE: Wybrane atrakcje wymagają łącznie ok. {zajety_czas}h. Przewidywany wolny czas podczas tego pobytu to ok. {dostepny_czas}h. Sprawdź, czy wszystko się zmieści na styk!")
+            st.error(f"❌ OSTRZEŻENIE: Wybrane atrakcje wymagają ok. {zajety_czas}h. Przewidywany wolny czas (w {liczba_dni} dni) to ok. {dostepny_czas}h. Sprawdź, czy wszystko się zmieści na styk!")
         else:
             st.success(f"✅ Czas zaplanowany na atrakcje: {zajety_czas}h (W normie)")
         
-        # Generator Tekstowy
         draft_agenda = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
         kolejka_atrakcji = wybrane_atrakcje_agenda.copy()
 
         def format_time(dt): return dt.strftime('%H:%M')
         def add_hours(dt, hours): return dt + timedelta(minutes=int(hours * 60))
 
-        if dni == 1:
-            draft_agenda += "DZIEŃ 1\n"
+        if liczba_dni == 1:
+            draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             draft_agenda += "10:00 - Przyjazd i rozpoczęcie spotkania\n"
             obecny_czas = datetime.strptime("10:30", "%H:%M")
             for atr in kolejka_atrakcji:
@@ -491,20 +492,28 @@ with tab1:
                 draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                 obecny_czas = koniec
             draft_agenda += f"{format_time(obecny_czas)} - Obiadokolacja / Zakończenie\n"
-            
         else:
+            # DZIEŃ 1 (Przyjazd)
             draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             draft_agenda += "15:00 - Przyjazd i Zakwaterowanie\n"
             obecny_czas = datetime.strptime("16:00", "%H:%M")
             
-            if kolejka_atrakcji:
-                atr = kolejka_atrakcji.pop(0)
+            while kolejka_atrakcji:
+                atr = kolejka_atrakcji[0]
                 czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
                 koniec = add_hours(obecny_czas, czas_trwania)
-                draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                
+                # Zabezpieczenie przed wychodzeniem poza kolację w dniu przyjazdu
+                if koniec.hour >= 19 and obecny_czas.hour >= 16:
+                    break
+                else:
+                    draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                    obecny_czas = koniec
+                    kolejka_atrakcji.pop(0)
             draft_agenda += "18:00 - Obiadokolacja\n\n"
             
-            for d in range(2, dni):
+            # DNI PEŁNE (Środkowe - jeśli wydarzenie jest na min. 3 dni)
+            for d in range(2, liczba_dni):
                 draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n"
                 draft_agenda += "09:00 - 10:00 : Śniadanie\n"
                 obecny_czas = datetime.strptime("10:00", "%H:%M")
@@ -527,7 +536,8 @@ with tab1:
                         
                 draft_agenda += "18:00 - Obiadokolacja\n\n"
                 
-            draft_agenda += f"DZIEŃ {dni} (Wyjazd)\n"
+            # DZIEŃ OSTATNI (Wyjazd)
+            draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
             draft_agenda += "09:00 - 10:00 : Śniadanie\n"
             obecny_czas = datetime.strptime("10:00", "%H:%M")
             for atr in kolejka_atrakcji: 
@@ -537,7 +547,7 @@ with tab1:
                 obecny_czas = koniec
             draft_agenda += f"{format_time(obecny_czas)} - Wymeldowanie i zakończenie pobytu\n"
 
-        st.info("Poniższy tekst zostanie automatycznie dodany do slajdu 'Agenda' (w miejsce znacznika {{przykład agendy}}). Możesz go edytować!")
+        st.info("Poniższy tekst zostanie automatycznie dodany do slajdu 'Agenda' (w miejsce znacznika {{przykład agendy}}). Wszelkie atrakcje wieczorne przenieś sobie tu ręcznie po kolacji!")
         final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=300)
 
     with st.container():
@@ -571,7 +581,6 @@ with tab1:
                                 
                             marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
                             
-                            # Słownik zamian tekstów w plikach PPTX
                             replacements = {
                                 "{{nazwa firmy}}": nazwa_docelowa,
                                 "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
@@ -582,10 +591,8 @@ with tab1:
                                 "{{atrakcja}} i {{atrakcja}}": atrakcje_txt,
                                 "{{Jest nam": "Jest nam",
                                 "stada!}}": "stada!",
-                                # Dokładne chwytanie znacznika agendy (zabezpieczone na możliwe spacje)
                                 "{{przykład agendy}}": final_agenda_text,
                                 "{{ przykład agendy }}": final_agenda_text,
-                                # Wyczyszczenie znacznika z pliku wyceny (tabela jest nakładana jako obraz/pdf)
                                 "{{tabela z wyceną dla b2b }}": "",
                                 "{{ tabela z wyceną dla b2b }}": ""
                             }
@@ -604,7 +611,6 @@ with tab1:
                             for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
                                 add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, replacements)
 
-                            # Generowanie Tabeli Wyceny w PDF
                             buf = io.BytesIO()
                             doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
                             elements = []
@@ -634,7 +640,6 @@ with tab1:
                             buf.seek(0)
                             open_streams.append(buf)
                             
-                            # Nakładanie wygenerowanej tabeli na wyczyszczoną kartę 'wycena.pptx'
                             wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
                             if wycena_file:
                                 try:
