@@ -6,6 +6,7 @@ import os
 import subprocess
 import base64
 import time
+import re
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -142,7 +143,6 @@ def update_file_on_drive(file_id, df, file_name):
 
 # --- PANCERNA ZAMIANA TEKSTU W PPTX ---
 def process_shape(shape, replacements):
-    # Obsługa ramek tekstowych
     if hasattr(shape, "text_frame") and shape.text_frame is not None:
         for paragraph in shape.text_frame.paragraphs:
             if not paragraph.runs: continue
@@ -161,12 +161,10 @@ def process_shape(shape, replacements):
                 for i in range(1, len(paragraph.runs)):
                     paragraph.runs[i].text = ""
 
-    # Obsługa grup
     if hasattr(shape, "shapes"):
         for subshape in shape.shapes:
             process_shape(subshape, replacements)
             
-    # Obsługa tabel
     if hasattr(shape, "has_table") and shape.has_table:
         for row in shape.table.rows:
             for cell in row.cells:
@@ -239,12 +237,14 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
+# --- INTELIGENTNE CZYTANIE CZASU I OGRANICZEŃ STARTU Z EXCELA ---
 def get_price_data(usluga_name, df):
-    if df is None or df.empty: return {"cena": 0, "czas": 0.0}
+    if df is None or df.empty: return {"cena": 0, "czas": 0.0, "min_start": 0}
     try:
         col_name = next((c for c in df.columns if 'nazwa' in c.lower() or 'usługa' in c.lower() or 'usluga' in c.lower()), None)
         col_price = next((c for c in df.columns if 'cena' in c.lower()), None)
         col_czas = next((c for c in df.columns if 'długość' in c.lower() or 'dlugosc' in c.lower()), None)
+        col_kiedy = next((c for c in df.columns if 'kiedy' in c.lower() or 'zacząć' in c.lower() or 'zaczac' in c.lower()), None)
         
         if col_name and col_price:
             match = df[df[col_name].astype(str).str.strip().str.lower() == usluga_name.lower()]
@@ -255,7 +255,7 @@ def get_price_data(usluga_name, df):
                 val = match.iloc[0][col_price]
                 cena = float(val) if pd.notna(val) else 0.0
                 
-                czas_num = 0.0
+                czas_num = 1.0
                 if col_czas and pd.notna(match.iloc[0][col_czas]):
                     czas_str = str(match.iloc[0][col_czas]).lower().replace('h', '').replace('godz.', '').replace('godz', '').strip()
                     if czas_str:
@@ -267,11 +267,19 @@ def get_price_data(usluga_name, df):
                             else: czas_num = float(czas_str.replace(',', '.'))
                         else:
                             try: czas_num = float(czas_str)
-                            except: czas_num = 0.0
+                            except: czas_num = 1.0
                 
-                return {"cena": cena, "czas": czas_num}
+                # Wykrywanie "16:00-20:00" z cennika i wyciąganie liczby "16"
+                min_start = 0
+                if col_kiedy and pd.notna(match.iloc[0][col_kiedy]):
+                    kiedy_str = str(match.iloc[0][col_kiedy]).strip()
+                    m = re.search(r'(\d{1,2}):', kiedy_str)
+                    if m:
+                        min_start = int(m.group(1))
+                
+                return {"cena": cena, "czas": czas_num, "min_start": min_start}
     except Exception: pass
-    return {"cena": 0, "czas": 0.0}
+    return {"cena": 0, "czas": 0.0, "min_start": 0}
 
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
@@ -443,7 +451,7 @@ with tab1:
                 a_data = CENNIK["SPAstwisko"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"spa_{a}")
                 pozycje_kosztowe.append({"Kategoria": "SPAstwisko", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
-                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"]})
+                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"]})
                 
         with c_atr:
             atr_sel = st.multiselect("Atrakcje", list(CENNIK["Atrakcje"].keys()))
@@ -451,7 +459,7 @@ with tab1:
                 a_data = CENNIK["Atrakcje"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"atr_{a}")
                 pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
-                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"]})
+                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"]})
 
         with c_biz:
             biz_sel = st.multiselect("Biznes", list(CENNIK["Biznes"].keys()))
@@ -459,12 +467,11 @@ with tab1:
                 a_data = CENNIK["Biznes"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"biz_{a}")
                 pozycje_kosztowe.append({"Kategoria": "Biznes", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
-                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"]})
+                wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"]})
 
     with st.container():
         st.subheader("5. Generator Harmonogramu (Agenda)")
         
-        # Obliczanie fizycznych dni wydarzenia zamiast samych nocy hotelowych
         liczba_nocy = (d_out - d_in).days
         liczba_dni = liczba_nocy + 1 if liczba_nocy > 0 else 1
         
@@ -472,82 +479,133 @@ with tab1:
         zajety_czas = sum(item["Czas"] for item in wybrane_atrakcje_agenda)
         
         if zajety_czas > dostepny_czas:
-            st.error(f"❌ OSTRZEŻENIE: Wybrane atrakcje wymagają ok. {zajety_czas}h. Przewidywany wolny czas (w {liczba_dni} dni) to ok. {dostepny_czas}h. Sprawdź, czy wszystko się zmieści na styk!")
+            st.error(f"❌ OSTRZEŻENIE: Wybrane atrakcje wymagają ok. {zajety_czas}h. Przewidywany wolny czas (w {liczba_dni} dni) to ok. {dostepny_czas}h.")
         else:
             st.success(f"✅ Czas zaplanowany na atrakcje: {zajety_czas}h (W normie)")
         
         draft_agenda = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
-        kolejka_atrakcji = wybrane_atrakcje_agenda.copy()
-
+        
         def format_time(dt): return dt.strftime('%H:%M')
         def add_hours(dt, hours): return dt + timedelta(minutes=int(hours * 60))
 
         if liczba_dni == 1:
+            kolejka_atrakcji = sorted(wybrane_atrakcje_agenda.copy(), key=lambda x: x['MinStart'])
             draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             draft_agenda += "10:00 - Przyjazd i rozpoczęcie spotkania\n"
             obecny_czas = datetime.strptime("10:30", "%H:%M")
             for atr in kolejka_atrakcji:
+                if atr['MinStart'] > obecny_czas.hour:
+                    draft_agenda += f"{format_time(obecny_czas)} - {atr['MinStart']:02d}:00 : Czas wolny\n"
+                    obecny_czas = obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                
                 czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
                 koniec = add_hours(obecny_czas, czas_trwania)
                 draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                 obecny_czas = koniec
             draft_agenda += f"{format_time(obecny_czas)} - Obiadokolacja / Zakończenie\n"
         else:
-            # DZIEŃ 1 (Przyjazd)
+            kolejka_atrakcji = wybrane_atrakcje_agenda.copy()
+            
+            # --- DZIEŃ 1 (Przyjazd) ---
             draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             draft_agenda += "15:00 - Przyjazd i Zakwaterowanie\n"
             obecny_czas = datetime.strptime("16:00", "%H:%M")
             
+            # Popołudnie przed kolacją
             while kolejka_atrakcji:
-                atr = kolejka_atrakcji[0]
-                czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
-                koniec = add_hours(obecny_czas, czas_trwania)
-                
-                # Zabezpieczenie przed wychodzeniem poza kolację w dniu przyjazdu
-                if koniec.hour >= 19 and obecny_czas.hour >= 16:
-                    break
-                else:
-                    draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] < 18), -1)
+                if idx != -1:
+                    atr = kolejka_atrakcji.pop(idx)
+                    start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                    if start > obecny_czas:
+                        draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                    koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
+                    
+                    if start.hour >= 18:
+                        kolejka_atrakcji.insert(0, atr)
+                        break
+                        
+                    draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                     obecny_czas = koniec
-                    kolejka_atrakcji.pop(0)
-            draft_agenda += "18:00 - Obiadokolacja\n\n"
+                    if obecny_czas.hour >= 18: break
+                else: break
+                
+            start_kolacji = max(obecny_czas, datetime.strptime("18:00", "%H:%M"))
+            koniec_kolacji = add_hours(start_kolacji, 1.0)
+            draft_agenda += f"{format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
+            obecny_czas = koniec_kolacji
             
-            # DNI PEŁNE (Środkowe - jeśli wydarzenie jest na min. 3 dni)
+            # Blok wieczorny (Ognisko, Balia itd.)
+            while kolejka_atrakcji:
+                idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] >= 16), -1)
+                if idx != -1:
+                    atr = kolejka_atrakcji.pop(idx)
+                    start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                    if start > obecny_czas:
+                        draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                    koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
+                    draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                    obecny_czas = koniec
+                else: break
+            draft_agenda += "\n"
+            
+            # --- DNI ŚRODKOWE ---
             for d in range(2, liczba_dni):
                 draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n"
                 draft_agenda += "09:00 - 10:00 : Śniadanie\n"
                 obecny_czas = datetime.strptime("10:00", "%H:%M")
                 
                 while kolejka_atrakcji:
-                    atr = kolejka_atrakcji[0]
-                    czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
-                    koniec = add_hours(obecny_czas, czas_trwania)
-                    
-                    if koniec.hour >= 18: 
-                        if obecny_czas.hour == 10: 
-                            draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
-                            obecny_czas = koniec
-                            kolejka_atrakcji.pop(0)
-                        break 
-                    else:
-                        draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
-                        obecny_czas = koniec
-                        kolejka_atrakcji.pop(0)
+                    idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] < 18), -1)
+                    if idx != -1:
+                        atr = kolejka_atrakcji.pop(idx)
+                        start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                        if start > obecny_czas:
+                            draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                         
-                draft_agenda += "18:00 - Obiadokolacja\n\n"
+                        koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
+                        
+                        if start.hour >= 18:
+                            kolejka_atrakcji.insert(idx, atr)
+                            break
+                            
+                        draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                        obecny_czas = koniec
+                        if obecny_czas.hour >= 18: break
+                    else: break
+                        
+                start_kolacji = max(obecny_czas, datetime.strptime("18:00", "%H:%M"))
+                koniec_kolacji = add_hours(start_kolacji, 1.0)
+                draft_agenda += f"{format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
+                obecny_czas = koniec_kolacji
                 
-            # DZIEŃ OSTATNI (Wyjazd)
+                while kolejka_atrakcji:
+                    idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] >= 16), -1)
+                    if idx != -1:
+                        atr = kolejka_atrakcji.pop(idx)
+                        start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                        if start > obecny_czas:
+                            draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                        koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
+                        draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                        obecny_czas = koniec
+                    else: break
+                draft_agenda += "\n"
+                
+            # --- DZIEŃ OSTATNI (Wyjazd) ---
             draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
             draft_agenda += "09:00 - 10:00 : Śniadanie\n"
             obecny_czas = datetime.strptime("10:00", "%H:%M")
             for atr in kolejka_atrakcji: 
-                czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
-                koniec = add_hours(obecny_czas, czas_trwania)
-                draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
+                if start > obecny_czas:
+                    draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
+                draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                 obecny_czas = koniec
             draft_agenda += f"{format_time(obecny_czas)} - Wymeldowanie i zakończenie pobytu\n"
 
-        st.info("Poniższy tekst zostanie automatycznie dodany do slajdu 'Agenda' (w miejsce znacznika {{przykład agendy}}). Wszelkie atrakcje wieczorne przenieś sobie tu ręcznie po kolacji!")
+        st.info("Poniższy tekst zostanie wklejony do pliku 'Agenda' w miejscu znacznika {{przykład agendy}}.")
         final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=300)
 
     with st.container():
