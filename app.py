@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials as SACredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from pptx import Presentation
-from pypdf import PdfWriter, PdfReader, PageObject
+from pypdf import PdfWriter, PdfReader
 
 # ReportLab
 from reportlab.lib.pagesizes import A4
@@ -108,12 +108,8 @@ def fetch_all_debogora_files(root_id):
                     else:
                         all_files.append(f)
                 request = service.files().list_next(request, results)
-        except Exception as e:
-            print(f"Błąd API Drive: {e}")
-            
-    # ZABEZPIECZENIE PRZED ZAPISANIEM PUSTEJ LISTY
-    if not all_files:
-        st.cache_data.clear()
+        except Exception: 
+            pass
     return all_files
 
 def download_file(file_id, retries=3):
@@ -427,7 +423,6 @@ with tab1:
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
                 pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d} ({ile} os.)", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
 
-        # BLOKADA OVERBOOKINGU
         overbooking_error = False
         if osoby_zadeklarowane > st.session_state.l_osob_total:
             st.error(f"⚠️ UWAGA: Przydzieliłeś miejsca dla {osoby_zadeklarowane} osób, a zadeklarowano łącznie {st.session_state.l_osob_total} miejsc! Musisz to poprawić.")
@@ -538,7 +533,7 @@ with tab1:
 
                         # --- 7. WYCENA (TABELA W PIONIE A4 + TŁO Z PPTX) ---
                         buf = io.BytesIO()
-                        # Zmienione na standardowe pionowe A4, tak jak chcesz
+                        # Zmienione na standardowe pionowe A4
                         doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
                         elements = []
                         styles = getSampleStyleSheet()
@@ -552,7 +547,6 @@ with tab1:
                             t_data.append([kat, opis, ilosc, suma_str])
                         t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                         
-                        # Dopasowane proporcje kolumn do orientacji pionowej
                         table = Table(t_data, colWidths=[100, 230, 50, 90])
                         t_style = TableStyle([
                             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])),
@@ -594,10 +588,8 @@ with tab1:
                                 for i, fg_page in enumerate(fg_reader.pages):
                                     bg_idx = min(i, len(bg_reader.pages) - 1)
                                     bg_page = bg_reader.pages[bg_idx]
-                                    new_page = PageObject.create_blank_page(width=bg_page.mediabox.width, height=bg_page.mediabox.height)
-                                    new_page.merge_page(bg_page)
-                                    new_page.merge_page(fg_page)
-                                    merger.append(new_page)
+                                    bg_page.merge_page(fg_page) # Tutaj nakładamy wygenerowaną tabelę na stronę PPTX
+                                    merger.add_page(bg_page)
                             else:
                                 merger.append(PdfReader(buf, strict=False))
                         except Exception as e:
