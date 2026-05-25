@@ -15,7 +15,7 @@ from pptx import Presentation
 from pypdf import PdfWriter, PdfReader, PageObject
 
 # ReportLab
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -108,7 +108,12 @@ def fetch_all_debogora_files(root_id):
                     else:
                         all_files.append(f)
                 request = service.files().list_next(request, results)
-        except: pass
+        except Exception as e:
+            print(f"Błąd API Drive: {e}")
+            
+    # ZABEZPIECZENIE PRZED ZAPISANIEM PUSTEJ LISTY
+    if not all_files:
+        st.cache_data.clear()
     return all_files
 
 def download_file(file_id, retries=3):
@@ -177,8 +182,7 @@ def normalize_pl(text):
 SYNONYMS = {
     "okładka": "okładka_02",
     "powitalna": "karta powitalna",
-    "dworek": "Zakwaterowanie", 
-    "krovacja": "Zakwaterowanie",
+    "Zakwaterowanie": "Zakwaterowanie_02",
     "wyżywienie": "wyżywienie",
     "atrakcje_wstęp": "atrakcje_",
     "wycena": "wycena",
@@ -343,6 +347,8 @@ with st.sidebar:
         if st.button("🔄 Wymuś ponowne skanowanie Dysku", type="primary"):
             fetch_all_debogora_files.clear()
             st.rerun()
+    else:
+        st.error("Brak plików na Dysku. Sprawdź połączenie i odśwież stronę.")
 
 try:
     logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
@@ -434,7 +440,6 @@ with tab1:
         wyz_sel = st.multiselect("Wybierz opcje wyżywienia", list(CENNIK["wyzywienie"].keys()))
         for w in wyz_sel:
             w_data = CENNIK["wyzywienie"][w]
-            # Automatyczne liczenie posiłków: osoby x dni
             domyslna_ilosc_wyz = st.session_state.l_osob_total * dni
             ile = st.number_input(f"Ilość (domyślnie {st.session_state.l_osob_total} os. x {dni} dni): {w}", 1, 5000, domyslna_ilosc_wyz)
             pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": w, "Ilość": ile, "Cena": w_data["cena"], "Suma": ile*w_data["cena"], "pdf_kw": w_data["pdf"]})
@@ -476,7 +481,7 @@ with tab1:
                 if not klient_imie:
                     st.error("Podaj imię i nazwisko klienta (Pole z gwiazdką)!")
                 else:
-                    with st.spinner("Pobieranie plików, zamiana danych i układanie oferty w idealnej kolejności..."):
+                    with st.spinner("Pobieranie plików, zamiana danych i kompilacja PDF..."):
                         merger = PdfWriter()
                         open_streams = []
                         missing_cards = []
@@ -507,7 +512,7 @@ with tab1:
                             "stada!": "stada!"
                         }
                         
-                        # --- 1. OKŁADKA (Okładka 02) ---
+                        # --- 1. OKŁADKA ---
                         add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, replacements)
 
                         # --- 2. KARTA POWITALNA ---
@@ -531,10 +536,10 @@ with tab1:
                         for kw in atrakcje_kws:
                             add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, replacements)
 
-                        # --- 7. WYCENA (TABELA REPORTLAB + TŁO Z PPTX) ---
+                        # --- 7. WYCENA (TABELA W PIONIE A4 + TŁO Z PPTX) ---
                         buf = io.BytesIO()
-                        # Krajobrazowy format, żeby lepiej pasował do prezentacji (odsunięty od góry)
-                        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
+                        # Zmienione na standardowe pionowe A4, tak jak chcesz
+                        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
                         elements = []
                         styles = getSampleStyleSheet()
                         
@@ -547,7 +552,8 @@ with tab1:
                             t_data.append([kat, opis, ilosc, suma_str])
                         t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                         
-                        table = Table(t_data, colWidths=[150, 400, 70, 100])
+                        # Dopasowane proporcje kolumn do orientacji pionowej
+                        table = Table(t_data, colWidths=[100, 230, 50, 90])
                         t_style = TableStyle([
                             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])),
                             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -578,18 +584,16 @@ with tab1:
                             buf.seek(0)
                             open_streams.append(buf)
                             
-                            # Logika podkładania tła z pliku Wycena
                             wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
                             if wycena_file:
                                 wycena_bg_stream = process_file_to_pdf_stream(wycena_file, replacements)
                                 open_streams.append(wycena_bg_stream)
                                 bg_reader = PdfReader(wycena_bg_stream)
-                                fg_reader = PdfReader(buf) # wygenerowana tabela
+                                fg_reader = PdfReader(buf)
                                 
                                 for i, fg_page in enumerate(fg_reader.pages):
                                     bg_idx = min(i, len(bg_reader.pages) - 1)
                                     bg_page = bg_reader.pages[bg_idx]
-                                    # Scalanie strony z tabelą ze stroną z tłem (PPTX)
                                     new_page = PageObject.create_blank_page(width=bg_page.mediabox.width, height=bg_page.mediabox.height)
                                     new_page.merge_page(bg_page)
                                     new_page.merge_page(fg_page)
@@ -608,7 +612,6 @@ with tab1:
                         if missing_cards:
                             st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono następujących kart (pominęto w PDF): {', '.join(missing_cards)}")
 
-                        # ZAPIS DO PLIKU KOŃCOWEGO
                         final_pdf = io.BytesIO()
                         merger.write(final_pdf)
                         
