@@ -184,8 +184,18 @@ def normalize_pl(text):
 
 SYNONYMS = {
     "okładka": "okładka", 
-    "powitalna": "karta powitalna", "dworek": "Zakwaterowanie_02", "krovacja": "Zakwaterowanie_02",
-    "wyżywienie": "wyżywienie", "atrakcje_wstęp": "atrakcje", "wycena": "wycena", "agenda": "agenda", "kontakt": "kontakt",
+    "powitalna": "karta powitalna", 
+    "zakwaterowanie_dwor": "Zakwaterowanie_Dwór-3",
+    "zakwaterowanie_domki": "Zakwaterowanie_Domki",
+    "zakwaterowanie_oba": "Zakwaterowanie_Dwór i Domki",
+    "wyżywienie": "wyżywienie", 
+    "serwis kawowy": "serwis kawowy",
+    "wiejskie jadło": "wiejskie jadło",
+    "rozszerzonym menu": "kolacja z rozszerzonym menu",
+    "atrakcje_wstęp": "atrakcje", 
+    "wycena": "wycena", 
+    "agenda": "agenda", 
+    "kontakt": "kontakt",
     "ZłodziejKrów": "złodziej", "Łowcy krów": "złodziej", "Skarby": "skarby", "Krowie Safari": "safari",
     "Safari_Standard": "safari", "Safari_Rozszerzona": "rozszerzona", "Seans saunowy": "saunowy", "Sauna olchowa": "olchowa",
     "Staw": "staw", "Balia": "balia", "Sauny": "sauny", "Masaże": "masaż", "Paintball": "paintball", "Spływ kajakowy": "kajak",
@@ -237,7 +247,6 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
-# --- INTELIGENTNE CZYTANIE CZASU I OGRANICZEŃ STARTU Z EXCELA ---
 def get_price_data(usluga_name, df):
     if df is None or df.empty: return {"cena": 0, "czas": 0.0, "min_start": 0}
     try:
@@ -269,13 +278,11 @@ def get_price_data(usluga_name, df):
                             try: czas_num = float(czas_str)
                             except: czas_num = 1.0
                 
-                # Wykrywanie "16:00-20:00" z cennika i wyciąganie liczby "16"
                 min_start = 0
                 if col_kiedy and pd.notna(match.iloc[0][col_kiedy]):
                     kiedy_str = str(match.iloc[0][col_kiedy]).strip()
                     m = re.search(r'(\d{1,2}):', kiedy_str)
-                    if m:
-                        min_start = int(m.group(1))
+                    if m: min_start = int(m.group(1))
                 
                 return {"cena": cena, "czas": czas_num, "min_start": min_start}
     except Exception: pass
@@ -325,9 +332,9 @@ CENNIK = {
     "wyzywienie": {
         "Śniadanie": {"dane": get_price_data("Śniadanie", df_c), "pdf": "wyżywienie"},
         "Obiadokolacja": {"dane": get_price_data("Obiadokolacja", df_c), "pdf": "wyżywienie"},
-        "Serwis kawowy": {"dane": get_price_data("Serwis kawowy", df_c), "pdf": "wyżywienie"},
-        "Wiejskie jadło": {"dane": get_price_data("Wiejskie jadło (Podstawowe)", df_c), "pdf": "wyżywienie"},
-        "Kolacja z rozszerzonym menu": {"dane": get_price_data("Biesiada wieczorna", df_c), "pdf": "wyżywienie"}
+        "Serwis kawowy": {"dane": get_price_data("Serwis kawowy", df_c), "pdf": "serwis kawowy"},
+        "Wiejskie jadło": {"dane": get_price_data("Wiejskie jadło (Podstawowe)", df_c), "pdf": "wiejskie jadło"},
+        "Kolacja z rozszerzonym menu": {"dane": get_price_data("Biesiada wieczorna", df_c), "pdf": "rozszerzonym menu"}
     },
     "SPAstwisko": {
         "Seans full experience": {"dane": get_price_data("Seans full experience", df_c), "typ": "grupa", "pdf": "Seans saunowy"},
@@ -426,7 +433,7 @@ with tab1:
                 ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
                 osoby_zadeklarowane += ile
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": CENNIK["domki"][d]["pdf"]})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": "krovacja"})
 
         overbooking_error = False
         if osoby_zadeklarowane > st.session_state.l_osob_total:
@@ -491,60 +498,58 @@ with tab1:
         if liczba_dni == 1:
             kolejka_atrakcji = sorted(wybrane_atrakcje_agenda.copy(), key=lambda x: x['MinStart'])
             draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
-            draft_agenda += "10:00 - Przyjazd i rozpoczęcie spotkania\n"
+            draft_agenda += "• 10:00 - Przyjazd i rozpoczęcie spotkania\n"
             obecny_czas = datetime.strptime("10:30", "%H:%M")
             for atr in kolejka_atrakcji:
                 if atr['MinStart'] > obecny_czas.hour:
-                    draft_agenda += f"{format_time(obecny_czas)} - {atr['MinStart']:02d}:00 : Czas wolny\n"
+                    draft_agenda += f"• {format_time(obecny_czas)} - {atr['MinStart']:02d}:00 : Czas wolny\n"
                     obecny_czas = obecny_czas.replace(hour=atr['MinStart'], minute=0)
                 
                 czas_trwania = atr['Czas'] if atr['Czas'] > 0 else 1.0
                 koniec = add_hours(obecny_czas, czas_trwania)
-                draft_agenda += f"{format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                draft_agenda += f"• {format_time(obecny_czas)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                 obecny_czas = koniec
-            draft_agenda += f"{format_time(obecny_czas)} - Obiadokolacja / Zakończenie\n"
+            draft_agenda += f"• {format_time(obecny_czas)} - Obiadokolacja / Zakończenie\n"
         else:
             kolejka_atrakcji = wybrane_atrakcje_agenda.copy()
             
-            # --- DZIEŃ 1 (Przyjazd) ---
+            # --- DZIEŃ 1 ---
             draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
-            draft_agenda += "15:00 - Przyjazd i Zakwaterowanie\n"
+            draft_agenda += "• 15:00 - Przyjazd i Zakwaterowanie\n"
             obecny_czas = datetime.strptime("16:00", "%H:%M")
             
-            # Popołudnie przed kolacją
             while kolejka_atrakcji:
                 idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] < 18), -1)
                 if idx != -1:
                     atr = kolejka_atrakcji.pop(idx)
                     start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
                     if start > obecny_czas:
-                        draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                        draft_agenda += f"• {format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                     koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
                     
                     if start.hour >= 18:
                         kolejka_atrakcji.insert(0, atr)
                         break
                         
-                    draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                    draft_agenda += f"• {format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                     obecny_czas = koniec
                     if obecny_czas.hour >= 18: break
                 else: break
                 
             start_kolacji = max(obecny_czas, datetime.strptime("18:00", "%H:%M"))
             koniec_kolacji = add_hours(start_kolacji, 1.0)
-            draft_agenda += f"{format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
+            draft_agenda += f"• {format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
             obecny_czas = koniec_kolacji
             
-            # Blok wieczorny (Ognisko, Balia itd.)
             while kolejka_atrakcji:
                 idx = next((i for i, a in enumerate(kolejka_atrakcji) if a['MinStart'] >= 16), -1)
                 if idx != -1:
                     atr = kolejka_atrakcji.pop(idx)
                     start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
                     if start > obecny_czas:
-                        draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                        draft_agenda += f"• {format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                     koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
-                    draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                    draft_agenda += f"• {format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                     obecny_czas = koniec
                 else: break
             draft_agenda += "\n"
@@ -552,7 +557,7 @@ with tab1:
             # --- DNI ŚRODKOWE ---
             for d in range(2, liczba_dni):
                 draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n"
-                draft_agenda += "09:00 - 10:00 : Śniadanie\n"
+                draft_agenda += "• 09:00 - 10:00 : Śniadanie\n"
                 obecny_czas = datetime.strptime("10:00", "%H:%M")
                 
                 while kolejka_atrakcji:
@@ -561,7 +566,7 @@ with tab1:
                         atr = kolejka_atrakcji.pop(idx)
                         start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
                         if start > obecny_czas:
-                            draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                            draft_agenda += f"• {format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                         
                         koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
                         
@@ -569,14 +574,14 @@ with tab1:
                             kolejka_atrakcji.insert(idx, atr)
                             break
                             
-                        draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                        draft_agenda += f"• {format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                         obecny_czas = koniec
                         if obecny_czas.hour >= 18: break
                     else: break
                         
                 start_kolacji = max(obecny_czas, datetime.strptime("18:00", "%H:%M"))
                 koniec_kolacji = add_hours(start_kolacji, 1.0)
-                draft_agenda += f"{format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
+                draft_agenda += f"• {format_time(start_kolacji)} - {format_time(koniec_kolacji)} : Obiadokolacja\n"
                 obecny_czas = koniec_kolacji
                 
                 while kolejka_atrakcji:
@@ -585,28 +590,28 @@ with tab1:
                         atr = kolejka_atrakcji.pop(idx)
                         start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
                         if start > obecny_czas:
-                            draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                            draft_agenda += f"• {format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                         koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
-                        draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                        draft_agenda += f"• {format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                         obecny_czas = koniec
                     else: break
                 draft_agenda += "\n"
                 
-            # --- DZIEŃ OSTATNI (Wyjazd) ---
+            # --- DZIEŃ OSTATNI ---
             draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
-            draft_agenda += "09:00 - 10:00 : Śniadanie\n"
+            draft_agenda += "• 09:00 - 10:00 : Śniadanie\n"
             obecny_czas = datetime.strptime("10:00", "%H:%M")
             for atr in kolejka_atrakcji: 
                 start = obecny_czas if obecny_czas.hour >= atr['MinStart'] else obecny_czas.replace(hour=atr['MinStart'], minute=0)
                 if start > obecny_czas:
-                    draft_agenda += f"{format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
+                    draft_agenda += f"• {format_time(obecny_czas)} - {format_time(start)} : Czas wolny\n"
                 koniec = add_hours(start, atr['Czas'] if atr['Czas']>0 else 1.0)
-                draft_agenda += f"{format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
+                draft_agenda += f"• {format_time(start)} - {format_time(koniec)} : {atr['Nazwa']}\n"
                 obecny_czas = koniec
-            draft_agenda += f"{format_time(obecny_czas)} - Wymeldowanie i zakończenie pobytu\n"
+            draft_agenda += f"• {format_time(obecny_czas)} - Wymeldowanie i zakończenie pobytu\n"
 
-        st.info("Poniższy tekst zostanie wklejony do pliku 'Agenda' w miejscu znacznika {{przykład agendy}}.")
-        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=300)
+        st.info("Poniższy tekst zostanie wklejony w pliku Agenda (z czytelnymi punktami i odstępami).")
+        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=350)
 
     with st.container():
         st.subheader("6. Kosztorys i Eksport")
@@ -626,8 +631,11 @@ with tab1:
                             missing_cards = []
                             
                             nazwa_docelowa = firma_n if firma_n else klient_imie
+                            
+                            # Logika dla zakwaterowania
                             has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
                             has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
+                            
                             if has_dworek and has_krovacja: zakwaterowanie_txt = "domkach i pokojach"
                             elif has_krovacja: zakwaterowanie_txt = "domkach"
                             else: zakwaterowanie_txt = "pokojach"
@@ -658,17 +666,31 @@ with tab1:
                             add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, replacements)
                             add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, replacements)
                             
-                            if has_dworek: add_file_to_merger(merger, "dworek", wszystkie_pliki, open_streams, missing_cards, replacements)
-                            if has_krovacja: add_file_to_merger(merger, "krovacja", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            # DOBÓR WŁAŚCIWEJ KARTY ZAKWATEROWANIA
+                            if has_dworek and has_krovacja: 
+                                add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            elif has_dworek: 
+                                add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            elif has_krovacja: 
+                                add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, replacements)
 
+                            # DOBÓR WŁAŚCIWYCH KART WYŻYWIENIA (Podstawowa karta wyżywienia i dedykowane, jeśli wybrano)
                             if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
-                                add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                # Opcje podstawowe
+                                if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
+                                    add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                # Wypisujemy unikalne tagi pdf dla jedzenia i wrzucamy (Serwis kawowy, Wiejskie jadło, Kolacja rozszerzona)
+                                gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
+                                for g_kw in gastronomia_kws:
+                                    add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, replacements)
 
                             add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, replacements)
 
+                            # Dodanie kart Atrakcji i SPA
                             for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
                                 add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, replacements)
 
+                            # GENERATOR TABELI W PDF
                             buf = io.BytesIO()
                             doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
                             elements = []
@@ -696,8 +718,8 @@ with tab1:
                             elements.append(table)
                             doc.build(elements)
                             buf.seek(0)
-                            open_streams.append(buf)
                             
+                            # NAPRAWA PODWÓJNEJ TABELI - CZYSTE TŁO DLA KAŻDEJ STRONY TABELI
                             wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
                             if wycena_file:
                                 try:
@@ -707,13 +729,17 @@ with tab1:
                                     replace_text_in_pptx(prs, replacements)
                                     prs.save("temp_wycena.pptx")
                                     subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "temp_wycena.pptx"], check=True)
-                                    with open("temp_wycena.pdf", "rb") as f: bg_bytes = f.read()
-                                    bg_stream = io.BytesIO(bg_bytes)
-                                    open_streams.append(bg_stream)
                                     
-                                    bg_reader = PdfReader(bg_stream)
+                                    with open("temp_wycena.pdf", "rb") as f: 
+                                        bg_bytes = f.read()
+                                    
                                     fg_reader = PdfReader(buf)
                                     for i, fg_page in enumerate(fg_reader.pages):
+                                        # Pobieramy zawsze "czyste" wygenerowane tło Wyceny z pliku PPTX, co eliminuje problem obcinania/nakładania tła 2x
+                                        bg_stream_fresh = io.BytesIO(bg_bytes)
+                                        open_streams.append(bg_stream_fresh)
+                                        bg_reader = PdfReader(bg_stream_fresh)
+                                        
                                         bg_idx = min(i, len(bg_reader.pages) - 1)
                                         bg_page = bg_reader.pages[bg_idx]
                                         bg_page.merge_page(fg_page)
@@ -733,4 +759,3 @@ with tab1:
                         except Exception as global_error:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
                             st.error(f"Treść błędu (zrób screena i wyślij mi go): {str(global_error)}")
-                            st.info("Prawdopodobne przyczyny: 1) Brak pliku packages.txt na GitHubie z wpisanym 'libreoffice', 2) Uszkodzony plik PowerPoint, 3) Błąd pamięci serwera.")
