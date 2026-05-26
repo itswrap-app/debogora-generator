@@ -174,7 +174,6 @@ def normalize_pl(text):
     rep = {'ą':'a', 'ć':'c', 'ę':'e', 'ł':'l', 'ń':'n', 'ó':'o', 'ś':'s', 'ź':'z', 'ż':'z'}
     res = str(text).lower()
     for k, v in rep.items(): res = res.replace(k, v)
-    # Usuwa wszystko co NIE jest literą lub cyfrą (spacje, myślniki, podkreślenia)
     return re.sub(r'[\W_]+', '', res)
 
 SYNONYMS = {
@@ -203,14 +202,17 @@ def get_file_by_keyword(keyword, all_files):
     norm_search = normalize_pl(SYNONYMS.get(keyword, keyword))
     matches = [f for f in all_files if norm_search in normalize_pl(f['name'])]
     if matches:
+        matches.sort(key=lambda x: len(x['name']))  # Najkrótsza nazwa ma priorytet
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
         return prev_matches[0] if prev_matches else matches[0]
     return None
 
-def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, replacements=None):
+def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, added_file_ids, replacements=None):
     if not keyword: return
     file_obj = get_file_by_keyword(keyword, all_files)
     if file_obj:
+        if file_obj['id'] in added_file_ids:
+            return  # Zabezpieczenie blokujące dublowanie tej samej karty
         try:
             fh = download_file(file_obj['id'])
             fname = file_obj['name'].lower()
@@ -233,6 +235,7 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
                 pdf_stream = fh
             open_streams.append(pdf_stream)
             merger.append(PdfReader(pdf_stream, strict=False))
+            added_file_ids.add(file_obj['id'])
         except Exception as e:
             st.error(f"⚠️ Pominięto '{keyword}'. Błąd pliku '{file_obj['name']}': {e}")
             missing_cards.append(keyword)
@@ -590,6 +593,7 @@ with tab1:
                             merger = PdfWriter()
                             open_streams = []
                             missing_cards = []
+                            added_file_ids = set() # REJESTR DODANYCH PLIKÓW - BLOKADA DUBLI
                             
                             nazwa_docelowa = firma_n if firma_n else klient_imie
                             
@@ -623,27 +627,26 @@ with tab1:
                                 "{{ tabela z wyceną dla b2b }}": ""
                             }
                             
-                            add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, replacements)
-                            add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                            add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             
-                            # LOGIKA DOBORU KART ZAKWATEROWANIA
                             if has_dworek and has_krovacja: 
-                                add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             elif has_dworek: 
-                                add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             elif has_krovacja: 
-                                add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                             if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
                                 if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
-                                    add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, replacements)
+                                    add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                                 gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
-                                for g_kw in gastronomia_kws: add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, replacements)
+                                for g_kw in gastronomia_kws: add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
-                            add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                             for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
-                                add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, replacements)
+                                add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                             buf = io.BytesIO()
                             doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
@@ -698,8 +701,8 @@ with tab1:
                                 except Exception: merger.append(PdfReader(buf, strict=False))
                             else: merger.append(PdfReader(buf, strict=False))
 
-                            add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, replacements)
-                            add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, replacements)
+                            add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                            add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                             if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono kart: {', '.join(missing_cards)}")
 
@@ -711,7 +714,6 @@ with tab1:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
                             st.error(f"Treść błędu (zrób screena i wyślij mi go): {str(global_error)}")
                         finally:
-                            # AGRESYWNE CZYSZCZENIE PAMIĘCI I DYSKU PO WYGENEROWANIU
                             for f in glob.glob("temp_*"):
                                 try: os.remove(f)
                                 except: pass
