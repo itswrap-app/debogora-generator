@@ -36,7 +36,9 @@ CI = {
     "white": "#ffffff"
 }
 
-ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
+# --- IDENTYFIKATORY DYSKU GOOGLE ---
+ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"  # Szablony i Cennik
+BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" # Zapis PDFów (Folder Krovacja)
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
 FONT_HEADER = 'Helvetica-Bold'
@@ -91,36 +93,29 @@ def get_drive_service():
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_baza_folder_id(root_id):
-    service = get_drive_service()
-    folder_name = "Wygenerowane Oferty"
-    query = f"name='{folder_name}' and '{root_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get('files', [])
-    if files:
-        return files[0]['id']
-    else:
-        file_metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [root_id]
-        }
-        file = service.files().create(body=file_metadata, fields='id').execute()
-        return file.get('id')
-
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_baza_files(baza_id):
     service = get_drive_service()
     query = f"'{baza_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc").execute()
+    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     return results.get('files', [])
 
 def upload_pdf_to_drive(file_bytes, filename, folder_id):
     service = get_drive_service()
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
     file_metadata = {'name': filename, 'parents': [folder_id]}
-    file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+    file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
+    
+    # Skopiowana logika z ITS Wrap - nadanie uprawnień do odczytu
+    try:
+        service.permissions().create(
+            fileId=file.get('id'),
+            body={'type': 'anyone', 'role': 'reader'},
+            supportsAllDrives=True
+        ).execute()
+    except Exception as e:
+        st.warning(f"Uwaga: Zapisano plik, ale nie udało się nadać publicznych uprawnień: {e}")
+        
     return file
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -132,7 +127,7 @@ def fetch_all_debogora_files(root_id):
         current_folder = folders_to_search.pop(0)
         query = f"'{current_folder}' in parents and trashed = false"
         try:
-            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType)", pageSize=1000)
+            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType)", pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True)
             while request is not None:
                 results = request.execute()
                 files = results.get('files', [])
@@ -149,7 +144,7 @@ def download_file(file_id, retries=3):
     service = get_drive_service()
     for attempt in range(retries):
         try:
-            request = service.files().get_media(fileId=file_id)
+            request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request, chunksize=256*1024)
             done = False
@@ -172,7 +167,7 @@ def update_file_on_drive(file_id, df, file_name):
         mimetype = 'text/csv'
     buffer.seek(0)
     media = MediaIoBaseUpload(buffer, mimetype=mimetype, resumable=True)
-    service.files().update(fileId=file_id, media_body=media).execute()
+    service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
 
 # --- PANCERNA ZAMIANA TEKSTU W PPTX ---
 def process_shape(shape, replacements):
@@ -451,8 +446,8 @@ with tab3:
         fetch_baza_files.clear()
         
     try:
-        baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
-        baza_files = fetch_baza_files(baza_id)
+        # Odczyt bezpośrednio ze wskazanego folderu "Krovacja"
+        baza_files = fetch_baza_files(BAZA_OFERT_FOLDER_ID)
         
         if not baza_files:
             st.info("Brak wygenerowanych ofert w bazie. Stwórz pierwszą w Kreatorze Ofert!")
@@ -460,7 +455,7 @@ with tab3:
             for f in baza_files:
                 st.markdown(f"📄 **{f['name']}** - [🔗 Otwórz i pobierz z Google Drive]({f['webViewLink']})")
     except Exception as e:
-        st.error(f"Nie można załadować bazy (Błąd uprawnień): {e}")
+        st.error(f"Nie można załadować bazy: {e}")
 
 with tab1:
     pozycje_kosztowe = []
@@ -781,21 +776,19 @@ with tab1:
                             
                             st.success("✅ Oferta w formacie PDF została wygenerowana pomyślnie!")
                             
-                            # PO PIERWSZE: Pokazanie przycisku pobierania, by zabezpieczyć użytkownika
                             st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
-                            # PO DRUGIE: Próba zapisu do chmury zamknięta w niezależnym module (nie zepsuje pobierania)
                             try:
-                                baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
-                                upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, baza_id)
-                                st.info("✅ Kopia zapasowa oferty została poprawnie zapisana w Twojej chmurze Google.")
+                                # Zapis bezpośrednio do zdefiniowanego folderu (Krovacja) na podstawie ID "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5"
+                                upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID)
+                                st.info("✅ Kopia zapasowa oferty została pomyślnie zapisana i opublikowana w chmurze (Folder Krovacja).")
                                 fetch_baza_files.clear()
                             except Exception as cloud_error:
-                                st.warning("⚠️ Kopia nie mogła zostać zapisana w chmurze Google (brak uprawnień/miejsca dla konta technicznego). Twój plik PDF jest jednak gotowy do pobrania powyżej!")
+                                st.warning(f"⚠️ Kopia nie mogła zostać zapisana w chmurze Google. Twój plik PDF jest gotowy do pobrania powyżej. Błąd: {cloud_error}")
 
                         except Exception as global_error:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
-                            st.error(f"Treść błędu (zrób screena i wyślij mi go): {str(global_error)}")
+                            st.error(f"Treść błędu: {str(global_error)}")
                         finally:
                             for f in glob.glob("temp_*"):
                                 try: os.remove(f)
