@@ -91,6 +91,29 @@ def get_drive_service():
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
+def get_or_create_folder(folder_name, parent_id):
+    service = get_drive_service()
+    query = f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get('files', [])
+    if files:
+        return files[0]['id']
+    else:
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        file = service.files().create(body=file_metadata, fields='id').execute()
+        return file.get('id')
+
+def upload_pdf_to_drive(file_bytes, filename, folder_id):
+    service = get_drive_service()
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+    file_metadata = {'name': filename, 'parents': [folder_id]}
+    file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+    return file
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_all_debogora_files(root_id):
     service = get_drive_service()
@@ -190,8 +213,13 @@ SYNONYMS = {
     "wycena": "wycena", 
     "agenda": "agenda", 
     "kontakt": "kontakt",
-    "ZłodziejKrów": "złodziej", "Łowcy krów": "złodziej", "Skarby": "skarby", "Krowie Safari": "safari",
-    "Safari_Standard": "safari", "Safari_Rozszerzona": "rozszerzona", "Seans saunowy": "saunowy", "Sauna olchowa": "olchowa",
+    "ZłodziejKrów": "złodziej", 
+    "Łowcy krów": "złodziej", 
+    "Skarby": "skarby", 
+    "Safari_Standard": "safari dla grup_standard",        # Nowe celowanie w Krowie Safari Standard
+    "Safari_Rozszerzona": "safari dla grup_rozszerzona",  # Nowe celowanie w Krowie Safari Rozszerzone
+    "Seans saunowy": "saunowy", 
+    "Sauna olchowa": "olchowa",
     "Staw": "staw", "Balia": "balia", "Sauny": "sauny", "Masaże": "masaż", "Paintball": "paintball", "Spływ kajakowy": "kajak",
     "Rowery": "rowery", "Ognisko": "ognisko", "Punkt widokowy": "widokowy", "Łączka cielaczków": "cielacz",
     "Atrakcje na wodzie": "wodzie", "Złów i wypuść": "złów", "Grzybobranie": "grzyb", "Roztańczony las": "roztańczony",
@@ -201,6 +229,11 @@ SYNONYMS = {
 def get_file_by_keyword(keyword, all_files):
     norm_search = normalize_pl(SYNONYMS.get(keyword, keyword))
     matches = [f for f in all_files if norm_search in normalize_pl(f['name'])]
+    
+    # Blokada na kartę "Atrakcje na wodzie", gdy szukamy samego wstępu "Atrakcje"
+    if keyword == "atrakcje_wstęp":
+        matches = [f for f in matches if "wodzi" not in normalize_pl(f['name'])]
+        
     if matches:
         matches.sort(key=lambda x: len(x['name']))  # Najkrótsza nazwa ma priorytet
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
@@ -357,8 +390,8 @@ CENNIK = {
     "Atrakcje": {
         "Łowcy krów": {"dane": get_price_data("Łowcy krów", df_c), "typ": "osoba", "pdf": "Łowcy krów"},
         "Skarby Dębogóry": {"dane": get_price_data("Skarby Dębogóry", df_c), "typ": "osoba", "pdf": "Skarby"},
-        "Krowie Safari Standard": {"dane": get_price_data("Krowie Safari Standard", df_c), "typ": "osoba", "pdf": "Krowie Safari"},
-        "Krowie Safari Rozszerzone": {"dane": get_price_data("Krowie Safari Rozszerzone", df_c), "typ": "osoba", "pdf": "Krowie Safari"},
+        "Krowie Safari Standard": {"dane": get_price_data("Krowie Safari Standard", df_c), "typ": "osoba", "pdf": "Safari_Standard"}, # Poprawiono klucz
+        "Krowie Safari Rozszerzone": {"dane": get_price_data("Krowie Safari Rozszerzone", df_c), "typ": "osoba", "pdf": "Safari_Rozszerzona"}, # Poprawiono klucz
         "Paintball": {"dane": get_price_data("Paintball", df_c), "typ": "osoba", "pdf": "Paintball"},
         "Kajaki": {"dane": get_price_data("Kajaki", df_c), "typ": "osoba", "pdf": "Spływ kajakowy"},
         "Ognisko": {"dane": get_price_data("Ognisko", df_c), "typ": "grupa", "pdf": "Ognisko"},
@@ -393,7 +426,8 @@ def auto_alloc():
             st.session_state.wybrane_d.append(d)
             val = min(par["max_os"], total); st.session_state[f"os_{d}"] = val; total -= val
 
-tab1, tab2 = st.tabs(["📝 Kreator Ofert", "⚙️ Edycja Cennika Głównego"])
+# --- TABS: Kreator / Baza / Cennik ---
+tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edycja Cennika"])
 
 with tab2:
     st.subheader("Edycja pliku Cennika (Google Drive)")
@@ -404,12 +438,41 @@ with tab2:
             st.session_state.df_cennik = edited_df
             st.success("Zmiany zapisane!")
 
+with tab3:
+    st.subheader("Baza Wygenerowanych Ofert")
+    if st.button("🔄 Odśwież bazę"):
+        pass # Streamlit naturally reruns
+        
+    try:
+        baza_id = get_or_create_folder("Wygenerowane Oferty", ROOT_FOLDER_ID)
+        service = get_drive_service()
+        query = f"'{baza_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc").execute()
+        baza_files = results.get('files', [])
+        
+        if not baza_files:
+            st.info("Brak wygenerowanych ofert w bazie. Stwórz pierwszą w Kreatorze Ofert!")
+        else:
+            for f in baza_files:
+                st.markdown(f"📄 **{f['name']}** - [🔗 Otwórz i pobierz z Google Drive]({f['webViewLink']})")
+    except Exception as e:
+        st.error(f"Błąd ładowania bazy: {e}")
+
 with tab1:
     pozycje_kosztowe = []
     wybrane_atrakcje_agenda = []
 
     with st.container():
-        st.subheader("1. Główne Ustawienia i Dane Klienta")
+        c_head1, c_head2 = st.columns([4, 1])
+        with c_head1:
+            st.subheader("1. Główne Ustawienia i Dane Klienta")
+        with c_head2:
+            if st.button("🧹 Resetuj formularz"):
+                for key in list(st.session_state.keys()):
+                    if key not in ['df_cennik']:  # Chronimy tylko pobrany z dysku cennik
+                        del st.session_state[key]
+                st.rerun()
+
         c1, c2 = st.columns(2)
         with c1:
             marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"])
@@ -588,7 +651,7 @@ with tab1:
             if st.button("GENERUJ FINALNY PDF", disabled=overbooking_error):
                 if not klient_imie: st.error("Podaj imię i nazwisko klienta!")
                 else:
-                    with st.spinner("Pobieranie i kompilacja plików (To potrwa kilkanaście sekund)..."):
+                    with st.spinner("Pobieranie, kompilacja i zapis do bazy..."):
                         try:
                             merger = PdfWriter()
                             open_streams = []
@@ -708,7 +771,16 @@ with tab1:
 
                             final_pdf = io.BytesIO()
                             merger.write(final_pdf)
-                            st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF", final_pdf.getvalue(), f"Oferta_{safe_str(klient_imie).replace(' ', '_')}.pdf", "application/pdf", type="primary")
+                            
+                            # --- ZAPIS W CHMURZE ---
+                            pdf_bytes_to_upload = final_pdf.getvalue()
+                            baza_id = get_or_create_folder("Wygenerowane Oferty", ROOT_FOLDER_ID)
+                            nazwa_pliku_pdf = f"Oferta_{safe_str(klient_imie).replace(' ', '_')}_{datetime.now().strftime('%d%m%H%M')}.pdf"
+                            
+                            upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, baza_id)
+                            st.success("✅ Oferta wygenerowana i poprawnie zapisana w bazie w chmurze!")
+                            
+                            st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
                         except Exception as global_error:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
