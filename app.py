@@ -91,9 +91,11 @@ def get_drive_service():
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-def get_or_create_folder(folder_name, parent_id):
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_baza_folder_id(root_id):
     service = get_drive_service()
-    query = f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    folder_name = "Wygenerowane Oferty"
+    query = f"name='{folder_name}' and '{root_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
     if files:
@@ -102,10 +104,17 @@ def get_or_create_folder(folder_name, parent_id):
         file_metadata = {
             'name': folder_name,
             'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [parent_id]
+            'parents': [root_id]
         }
         file = service.files().create(body=file_metadata, fields='id').execute()
         return file.get('id')
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_baza_files(baza_id):
+    service = get_drive_service()
+    query = f"'{baza_id}' in parents and trashed = false"
+    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc").execute()
+    return results.get('files', [])
 
 def upload_pdf_to_drive(file_bytes, filename, folder_id):
     service = get_drive_service()
@@ -216,8 +225,8 @@ SYNONYMS = {
     "ZłodziejKrów": "złodziej", 
     "Łowcy krów": "złodziej", 
     "Skarby": "skarby", 
-    "Safari_Standard": "safari dla grup_standard",        # Nowe celowanie w Krowie Safari Standard
-    "Safari_Rozszerzona": "safari dla grup_rozszerzona",  # Nowe celowanie w Krowie Safari Rozszerzone
+    "Safari_Standard": "safari dla grup_standard",
+    "Safari_Rozszerzona": "safari dla grup_rozszerzona",
     "Seans saunowy": "saunowy", 
     "Sauna olchowa": "olchowa",
     "Staw": "staw", "Balia": "balia", "Sauny": "sauny", "Masaże": "masaż", "Paintball": "paintball", "Spływ kajakowy": "kajak",
@@ -230,12 +239,11 @@ def get_file_by_keyword(keyword, all_files):
     norm_search = normalize_pl(SYNONYMS.get(keyword, keyword))
     matches = [f for f in all_files if norm_search in normalize_pl(f['name'])]
     
-    # Blokada na kartę "Atrakcje na wodzie", gdy szukamy samego wstępu "Atrakcje"
     if keyword == "atrakcje_wstęp":
         matches = [f for f in matches if "wodzi" not in normalize_pl(f['name'])]
         
     if matches:
-        matches.sort(key=lambda x: len(x['name']))  # Najkrótsza nazwa ma priorytet
+        matches.sort(key=lambda x: len(x['name']))
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
         return prev_matches[0] if prev_matches else matches[0]
     return None
@@ -244,8 +252,7 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
     if not keyword: return
     file_obj = get_file_by_keyword(keyword, all_files)
     if file_obj:
-        if file_obj['id'] in added_file_ids:
-            return  # Zabezpieczenie blokujące dublowanie tej samej karty
+        if file_obj['id'] in added_file_ids: return
         try:
             fh = download_file(file_obj['id'])
             fname = file_obj['name'].lower()
@@ -390,8 +397,8 @@ CENNIK = {
     "Atrakcje": {
         "Łowcy krów": {"dane": get_price_data("Łowcy krów", df_c), "typ": "osoba", "pdf": "Łowcy krów"},
         "Skarby Dębogóry": {"dane": get_price_data("Skarby Dębogóry", df_c), "typ": "osoba", "pdf": "Skarby"},
-        "Krowie Safari Standard": {"dane": get_price_data("Krowie Safari Standard", df_c), "typ": "osoba", "pdf": "Safari_Standard"}, # Poprawiono klucz
-        "Krowie Safari Rozszerzone": {"dane": get_price_data("Krowie Safari Rozszerzone", df_c), "typ": "osoba", "pdf": "Safari_Rozszerzona"}, # Poprawiono klucz
+        "Krowie Safari Standard": {"dane": get_price_data("Krowie Safari Standard", df_c), "typ": "osoba", "pdf": "Safari_Standard"},
+        "Krowie Safari Rozszerzone": {"dane": get_price_data("Krowie Safari Rozszerzone", df_c), "typ": "osoba", "pdf": "Safari_Rozszerzona"},
         "Paintball": {"dane": get_price_data("Paintball", df_c), "typ": "osoba", "pdf": "Paintball"},
         "Kajaki": {"dane": get_price_data("Kajaki", df_c), "typ": "osoba", "pdf": "Spływ kajakowy"},
         "Ognisko": {"dane": get_price_data("Ognisko", df_c), "typ": "grupa", "pdf": "Ognisko"},
@@ -441,14 +448,11 @@ with tab2:
 with tab3:
     st.subheader("Baza Wygenerowanych Ofert")
     if st.button("🔄 Odśwież bazę"):
-        pass # Streamlit naturally reruns
+        fetch_baza_files.clear()
         
     try:
-        baza_id = get_or_create_folder("Wygenerowane Oferty", ROOT_FOLDER_ID)
-        service = get_drive_service()
-        query = f"'{baza_id}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc").execute()
-        baza_files = results.get('files', [])
+        baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
+        baza_files = fetch_baza_files(baza_id)
         
         if not baza_files:
             st.info("Brak wygenerowanych ofert w bazie. Stwórz pierwszą w Kreatorze Ofert!")
@@ -469,9 +473,10 @@ with tab1:
         with c_head2:
             if st.button("🧹 Resetuj formularz"):
                 for key in list(st.session_state.keys()):
-                    if key not in ['df_cennik']:  # Chronimy tylko pobrany z dysku cennik
+                    if key not in ['df_cennik']:
                         del st.session_state[key]
-                st.rerun()
+                if hasattr(st, "rerun"): st.rerun()
+                elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
 
         c1, c2 = st.columns(2)
         with c1:
@@ -651,12 +656,12 @@ with tab1:
             if st.button("GENERUJ FINALNY PDF", disabled=overbooking_error):
                 if not klient_imie: st.error("Podaj imię i nazwisko klienta!")
                 else:
-                    with st.spinner("Pobieranie, kompilacja i zapis do bazy..."):
+                    with st.spinner("Pobieranie, kompilacja i zapis do bazy (To potrwa kilkanaście sekund)..."):
                         try:
                             merger = PdfWriter()
                             open_streams = []
                             missing_cards = []
-                            added_file_ids = set() # REJESTR DODANYCH PLIKÓW - BLOKADA DUBLI
+                            added_file_ids = set()
                             
                             nazwa_docelowa = firma_n if firma_n else klient_imie
                             
@@ -774,11 +779,14 @@ with tab1:
                             
                             # --- ZAPIS W CHMURZE ---
                             pdf_bytes_to_upload = final_pdf.getvalue()
-                            baza_id = get_or_create_folder("Wygenerowane Oferty", ROOT_FOLDER_ID)
+                            baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
                             nazwa_pliku_pdf = f"Oferta_{safe_str(klient_imie).replace(' ', '_')}_{datetime.now().strftime('%d%m%H%M')}.pdf"
                             
                             upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, baza_id)
                             st.success("✅ Oferta wygenerowana i poprawnie zapisana w bazie w chmurze!")
+                            
+                            # Wymuszenie odświeżenia bazy dla zakładki z listą
+                            fetch_baza_files.clear()
                             
                             st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
