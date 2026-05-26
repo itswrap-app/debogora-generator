@@ -460,7 +460,7 @@ with tab3:
             for f in baza_files:
                 st.markdown(f"📄 **{f['name']}** - [🔗 Otwórz i pobierz z Google Drive]({f['webViewLink']})")
     except Exception as e:
-        st.error(f"Błąd ładowania bazy: {e}")
+        st.error(f"Nie można załadować bazy (Błąd uprawnień): {e}")
 
 with tab1:
     pozycje_kosztowe = []
@@ -656,7 +656,7 @@ with tab1:
             if st.button("GENERUJ FINALNY PDF", disabled=overbooking_error):
                 if not klient_imie: st.error("Podaj imię i nazwisko klienta!")
                 else:
-                    with st.spinner("Pobieranie, kompilacja i zapis do bazy (To potrwa kilkanaście sekund)..."):
+                    with st.spinner("Pobieranie, kompilacja i zapis plików... (To potrwa kilkanaście sekund)"):
                         try:
                             merger = PdfWriter()
                             open_streams = []
@@ -772,23 +772,26 @@ with tab1:
                             add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
-                            if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono kart: {', '.join(missing_cards)}")
+                            if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono niektórych kart: {', '.join(missing_cards)}")
 
                             final_pdf = io.BytesIO()
                             merger.write(final_pdf)
-                            
-                            # --- ZAPIS W CHMURZE ---
                             pdf_bytes_to_upload = final_pdf.getvalue()
-                            baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
                             nazwa_pliku_pdf = f"Oferta_{safe_str(klient_imie).replace(' ', '_')}_{datetime.now().strftime('%d%m%H%M')}.pdf"
                             
-                            upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, baza_id)
-                            st.success("✅ Oferta wygenerowana i poprawnie zapisana w bazie w chmurze!")
+                            st.success("✅ Oferta w formacie PDF została wygenerowana pomyślnie!")
                             
-                            # Wymuszenie odświeżenia bazy dla zakładki z listą
-                            fetch_baza_files.clear()
-                            
+                            # PO PIERWSZE: Pokazanie przycisku pobierania, by zabezpieczyć użytkownika
                             st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
+
+                            # PO DRUGIE: Próba zapisu do chmury zamknięta w niezależnym module (nie zepsuje pobierania)
+                            try:
+                                baza_id = get_baza_folder_id(ROOT_FOLDER_ID)
+                                upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, baza_id)
+                                st.info("✅ Kopia zapasowa oferty została poprawnie zapisana w Twojej chmurze Google.")
+                                fetch_baza_files.clear()
+                            except Exception as cloud_error:
+                                st.warning("⚠️ Kopia nie mogła zostać zapisana w chmurze Google (brak uprawnień/miejsca dla konta technicznego). Twój plik PDF jest jednak gotowy do pobrania powyżej!")
 
                         except Exception as global_error:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
