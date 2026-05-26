@@ -7,6 +7,7 @@ import subprocess
 import base64
 import time
 import re
+import glob
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -173,14 +174,15 @@ def normalize_pl(text):
     rep = {'ą':'a', 'ć':'c', 'ę':'e', 'ł':'l', 'ń':'n', 'ó':'o', 'ś':'s', 'ź':'z', 'ż':'z'}
     res = str(text).lower()
     for k, v in rep.items(): res = res.replace(k, v)
-    return res
+    # Usuwa wszystko co NIE jest literą lub cyfrą (spacje, myślniki, podkreślenia)
+    return re.sub(r'[\W_]+', '', res)
 
 SYNONYMS = {
     "okładka": "okładka", 
     "powitalna": "karta powitalna", 
-    "zakwaterowanie_dwor": "dwór-3",                     # Trafi idealnie w AsystentAI_Zakwaterowanie_Dwór-3
-    "zakwaterowanie_domki": "zakwaterowanie_domki",      # Trafi idealnie w AsystentAI_Zakwaterowanie_Domki
-    "zakwaterowanie_oba": "dwór i domki",                # Trafi idealnie w AsystentAI_Zakwaterowanie_Dwór i Domki
+    "zakwaterowanie_dwor": "dwór 3",
+    "zakwaterowanie_domki": "zakwaterowanie domki",
+    "zakwaterowanie_oba": "dwór i domki",
     "wyżywienie": "wyżywienie", 
     "serwis kawowy": "serwis kawowy",
     "wiejskie jadło": "wiejskie jadło",
@@ -239,7 +241,6 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
-# --- CZYTANIE CZASU I OGRANICZEŃ STARTU Z EXCELA (TERAZ OBA PARAMETRY) ---
 def get_price_data(usluga_name, df):
     if df is None or df.empty: return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
     try:
@@ -492,7 +493,6 @@ with tab1:
             m = int(round((hours_float - h) * 60))
             return f"{h:02d}:{m:02d}"
 
-        # NOWY, INTELIGENTNY SILNIK WYPEŁNIANIA BLOKÓW CZASOWYCH
         unassigned = wybrane_atrakcje_agenda.copy()
         unassigned.sort(key=lambda x: (x['MaxStart'] - x['MinStart'], x['MinStart']))
         
@@ -710,3 +710,8 @@ with tab1:
                         except Exception as global_error:
                             st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
                             st.error(f"Treść błędu (zrób screena i wyślij mi go): {str(global_error)}")
+                        finally:
+                            # AGRESYWNE CZYSZCZENIE PAMIĘCI I DYSKU PO WYGENEROWANIU
+                            for f in glob.glob("temp_*"):
+                                try: os.remove(f)
+                                except: pass
