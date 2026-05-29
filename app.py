@@ -106,7 +106,6 @@ def upload_pdf_to_drive(file_bytes, filename, folder_id):
     file_metadata = {'name': filename, 'parents': [folder_id]}
     file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
     
-    # Skopiowana logika z ITS Wrap - nadanie uprawnień do odczytu
     try:
         service.permissions().create(
             fileId=file.get('id'),
@@ -127,7 +126,7 @@ def fetch_all_debogora_files(root_id):
         current_folder = folders_to_search.pop(0)
         query = f"'{current_folder}' in parents and trashed = false"
         try:
-            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType)", pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True)
+            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType, webViewLink)", pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True)
             while request is not None:
                 results = request.execute()
                 files = results.get('files', [])
@@ -361,6 +360,18 @@ elif 'df_cennik' not in st.session_state:
 
 df_c = st.session_state.df_cennik
 
+# --- MENU BOCZNE Z KARTAMI ---
+with st.sidebar:
+    st.header("🗂️ Karty Produktów")
+    with st.expander("Rozwiń pliki do pobrania"):
+        if wszystkie_pliki:
+            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder']
+            for f in sorted(pliki_do_pobrania, key=lambda x: x['name']):
+                link = f.get('webViewLink', '#')
+                st.markdown(f"📄 [{f['name']}]({link})")
+        else:
+            st.info("Brak plików w bazie.")
+
 CENNIK = {
     "nocleg_1_noc": get_price_data("Nocleg (1 noc)", df_c)["cena"],
     "nocleg_2_noce": get_price_data("Nocleg (2+ noce)", df_c)["cena"],
@@ -446,9 +457,7 @@ with tab3:
         fetch_baza_files.clear()
         
     try:
-        # Odczyt bezpośrednio ze wskazanego folderu "Krovacja"
         baza_files = fetch_baza_files(BAZA_OFERT_FOLDER_ID)
-        
         if not baza_files:
             st.info("Brak wygenerowanych ofert w bazie. Stwórz pierwszą w Kreatorze Ofert!")
         else:
@@ -779,7 +788,6 @@ with tab1:
                             st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
                             try:
-                                # Zapis bezpośrednio do zdefiniowanego folderu (Krovacja) na podstawie ID "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5"
                                 upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID)
                                 st.info("✅ Kopia zapasowa oferty została pomyślnie zapisana i opublikowana w chmurze (Folder Krovacja).")
                                 fetch_baza_files.clear()
