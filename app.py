@@ -42,43 +42,36 @@ ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" 
 
 # =========================================================
-# MAPOWANIE POKOI HOTRES Z TWOJEGO PANELU
+# MAPOWANIE POKOI HOTRES (Automatycznie zsynchronizowane)
 # =========================================================
 HOTRES_ROOM_MAP = {
-    # DWÓR DĘBOGÓRA - POKOJE
-    39260: "Pokój nr 1",
-    39261: "Pokój nr 2",
-    39262: "Pokój nr 3",
-    39263: "Pokój nr 4",
-    39264: "Pokój nr 5",
-    39265: "Pokój nr 6",
-    41343: "Pokój nr 7",
-    39267: "Pokój nr 8",
-    39268: "Pokój nr 9",
-    39269: "Pokój nr 10",
-    39270: "Pokój nr 11",
-    39271: "Pokój nr 12",
-    
-    # KROVACJA - DOMKI
-    43197: "Muuu 1",
-    43198: "Muuu 2",
-    43210: "Muuu 3",
-    43200: "Muuu 4",
-    62015: "Muuu 5",
-    62019: "Muuu 6",
-
-    # INNE OBIEKTY (Dla przyszłych walidacji agendy i atrakcji)
-    41293: "Oranżeria",
-    41290: "Sala kominkowa",
-    41292: "Sala bankietowa",
-    52272: "Sala wielofunkcyjna",
-    50286: "Krovacja- cały kompleks",
-    52273: "Dwór - cały obiekt",
-    52275: "Strefa relaksu - balia #1",
-    52483: "Strefa relaksu - balia #2",
-    46920: "Ognisko #1",
-    52482: "Ognisko #2",
-    52274: "Łaźnia eventowa"
+    29952: "Krovacja - cały kompleks",
+    37951: "Muuu6/Domek6",
+    37950: "Muuu5/Domek5",
+    25074: "Muuu4/ Domek4",
+    25073: "Muuu3/ Domek3",
+    25072: "Muuu2/ Domek2",
+    25071: "Muuu1/ Domek1",
+    27589: "Ognisko #1",
+    27588: "Strefa relaksu - balia #1",
+    31294: "Strefa relaksu - balia #2",
+    31230: "Łaźnia eventowa",
+    23704: "Oranżeria",
+    23698: "Sala kominkowa",
+    31228: "Sala wielofunkcyjna",
+    23705: "Sala bankietowa",
+    22144: "Pokój nr 2",
+    22146: "Pokój nr 3",
+    22147: "Pokój nr 4",
+    22148: "Pokój nr 5",
+    22149: "Pokój nr 6",
+    22150: "Pokój nr 7",
+    22151: "Pokój nr 8",
+    22152: "Pokój nr 9",
+    22153: "Pokój nr 10",
+    22154: "Pokój nr 11",
+    22156: "Pokój nr 12",
+    31229: "Dwór - cały obiekt"
 }
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
