@@ -349,10 +349,10 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
         api_key = st.secrets["hotres"]["api"]
         auth_key = st.secrets["hotres"]["auth"]
     except KeyError:
-        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w pliku secrets.toml.", []
+        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets aplikacji Streamlit.", []
     
-    # Budujemy CZYSTY link, dokładnie taki jak podałeś z panelu (bez dodawania dat)
-    url = f"https://panel.hotres.pl/api_availability?api={api_key}&auth={auth_key}"
+    # Poprawiony, właściwy link z 'apikey' zamiast 'api'
+    url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
     
     try:
         # Pytamy Hotres (metoda GET)
@@ -380,13 +380,14 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
                         
             return "", list(zajete_obiekty)
         else:
-            # Tryb debugowania - ukrywamy część klucza API, żebyś mógł bezpiecznie sprawdzić konstrukcję linku
+            # Tryb debugowania
             safe_api = api_key[:4] + "..." if len(api_key) > 4 else "***"
-            safe_url = f"https://panel.hotres.pl/api_availability?api={safe_api}&auth=***"
-            return f"Błąd {response.status_code}. Serwer odrzucił adres: {safe_url} (Sprawdź, czy adres w dokumentacji ma końcówkę np. .php)", []
+            safe_url = f"https://panel.hotres.pl/api_availability?auth=***&apikey={safe_api}"
+            return f"Błąd {response.status_code}. Serwer odrzucił adres: {safe_url}", []
             
     except Exception as e:
         return f"Błąd komunikacji z Hotres: {str(e)}", []
+        
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
 cennik_file = None
