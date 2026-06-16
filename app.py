@@ -8,6 +8,7 @@ import base64
 import time
 import re
 import glob
+import requests
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -37,37 +38,46 @@ CI = {
 }
 
 # --- IDENTYFIKATORY DYSKU GOOGLE ---
-ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"  # Szablony i Cennik
-BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" # Zapis PDFów (Folder Krovacja)
+ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"  
+BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" 
 
-# --- INTELIGENTNE ŁADOWANIE CZCIONEK ---
+# =========================================================
+# MAPOWANIE POKOI HOTRES (Uzupełnij właściwe ID z panelu!)
+# =========================================================
+HOTRES_ROOM_MAP = {
+    # Przykładowe ID. Zamień na te wyciągnięte z Twojego API.
+    29411: "Muuu 1",
+    29412: "Muuu 2",
+    29413: "Muuu 3",
+    29414: "Muuu 4",
+    29415: "Muuu 5",
+    29416: "Muuu 6",
+    # Analogicznie dodaj ID dla Dworku, jeśli są w Hotres:
+    # 30001: "Pokój nr 1",
+    # 30002: "Pokój nr 2"
+}
+
+# --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
 FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 FONT_TEXT_BOLD = 'Helvetica-Bold'
-fonts_loaded = False
 
-lora_path = 'Lora-Bold.ttf'
-text_font_path = None
-text_font_bold_path = None
-
-for f in ['Lato-Regular.ttf', 'PTSans-Regular.ttf']:
-    if os.path.exists(f): text_font_path = f; break
-for f in ['Lato-Bold.ttf', 'PTSans-Bold.ttf']:
-    if os.path.exists(f): text_font_bold_path = f; break
-
-if os.path.exists(lora_path) and text_font_path:
+def register_custom_fonts():
+    global FONT_HEADER, FONT_TEXT, FONT_TEXT_BOLD
     try:
-        pdfmetrics.registerFont(TTFont('Lora-Bold', lora_path))
-        pdfmetrics.registerFont(TTFont('CI-Text', text_font_path))
-        FONT_HEADER = 'Lora-Bold'
-        FONT_TEXT = 'CI-Text'
-        if text_font_bold_path:
-            pdfmetrics.registerFont(TTFont('CI-Text-Bold', text_font_bold_path))
-            FONT_TEXT_BOLD = 'CI-Text-Bold'
-        else:
-            FONT_TEXT_BOLD = 'CI-Text'
-        fonts_loaded = True
-    except Exception: pass
+        if os.path.exists('Lora-Bold.ttf'):
+            pdfmetrics.registerFont(TTFont('Lora-Bold', 'Lora-Bold.ttf'))
+            FONT_HEADER = 'Lora-Bold'
+        if os.path.exists('PTSans-Regular.ttf'):
+            pdfmetrics.registerFont(TTFont('PTSans-Regular', 'PTSans-Regular.ttf'))
+            FONT_TEXT = 'PTSans-Regular'
+        if os.path.exists('PTSans-Bold.ttf'):
+            pdfmetrics.registerFont(TTFont('PTSans-Bold', 'PTSans-Bold.ttf'))
+            FONT_TEXT_BOLD = 'PTSans-Bold'
+    except Exception:
+        pass
+
+register_custom_fonts()
 
 st.markdown(f"""
     <style>
@@ -113,7 +123,7 @@ def upload_pdf_to_drive(file_bytes, filename, folder_id):
             supportsAllDrives=True
         ).execute()
     except Exception as e:
-        st.warning(f"Uwaga: Zapisano plik, ale nie udało się nadać publicznych uprawnień: {e}")
+        pass
         
     return file
 
@@ -215,7 +225,9 @@ SYNONYMS = {
     "atrakcje_wstęp": "atrakcje", 
     "wycena": "wycena", 
     "agenda": "agenda", 
-    "kontakt": "kontakt",
+    "kontakt": "AsystentAI_kontakt", 
+    "uklad_debogora": "AsystentAI_układ łóżek_Dębogóra",
+    "uklad_krovacja": "AsystentAI_układ łóżek_Krovacja",
     "ZłodziejKrów": "złodziej", 
     "Łowcy krów": "złodziej", 
     "Skarby": "skarby", 
@@ -331,13 +343,66 @@ def get_price_data(usluga_name, df):
     except Exception: pass
     return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
 
+def sprawdz_dostepnosc_hotres(data_od, data_do):
+    """Odpytuje API Hotres i zwraca listę ZAJĘTYCH obiektów (wg naszego mapowania)"""
+    try:
+        api_key = st.secrets["hotres"]["api"]
+        auth_key = st.secrets["hotres"]["auth"]
+    except KeyError:
+        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets aplikacji Streamlit.", []
+    
+    # Dla pewności przesyłamy zakres w parametrach time_from i time_to 
+    url = f"https://panel.hotres.pl/api_availability?api={api_key}&auth={auth_key}&time_from={data_od.strftime('%Y-%m-%d')}&time_to={data_do.strftime('%Y-%m-%d')}"
+    
+    try:
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            dane = response.json()
+            zajete_obiekty = set()
+            
+            # Tworzymy listę dat w których klient faktycznie nocuje (bez dnia wyjazdu)
+            liczba_nocy = max(1, (data_do - data_od).days)
+            wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
+            
+            for room_data in dane:
+                room_id = room_data.get("type_id")
+                # Sprawdzamy czy to jeden z naszych zmapowanych obiektów
+                nazwa_pokoju = HOTRES_ROOM_MAP.get(room_id, f"ID_{room_id}")
+                
+                for day_data in room_data.get("dates", []):
+                    data_dnia = day_data.get("date")
+                    # Zabezpieczenie przed dziwnymi formatami z Hotres (czasami float/string)
+                    dostepnosc = int(float(day_data.get("available", 0))) 
+                    
+                    if data_dnia in wymagane_daty and dostepnosc <= 0:
+                        zajete_obiekty.add(nazwa_pokoju)
+                        
+            return "", list(zajete_obiekty)
+        else:
+            return f"Hotres odrzucił połączenie. Kod błędu: {response.status_code}", []
+    except Exception as e:
+        return f"Błąd komunikacji z Hotres: {str(e)}", []
+
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
 cennik_file = None
 
 try:
-    with st.spinner("Skanowanie plików na Dysku Google..."):
+    with st.spinner("Skanowanie plików na Dysku Google (Zabezpieczam czcionki)..."):
         wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
+        
+        czcionki_do_pobrania = ['Lora-Bold.ttf', 'PTSans-Regular.ttf', 'PTSans-Bold.ttf']
+        pobrano_nowe = False
+        for f in wszystkie_pliki:
+            if f['name'] in czcionki_do_pobrania and not os.path.exists(f['name']):
+                fh = download_file(f['id'])
+                with open(f['name'], 'wb') as out:
+                    out.write(fh.getvalue())
+                pobrano_nowe = True
+                
+        if pobrano_nowe:
+            register_custom_fonts()
+
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
     if cennik_files:
@@ -365,7 +430,7 @@ with st.sidebar:
     st.header("🗂️ Karty Produktów")
     with st.expander("Rozwiń pliki do pobrania"):
         if wszystkie_pliki:
-            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder']
+            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder' and '.ttf' not in f['name'].lower()]
             for f in sorted(pliki_do_pobrania, key=lambda x: x['name']):
                 link = f.get('webViewLink', '#')
                 st.markdown(f"📄 [{f['name']}]({link})")
@@ -377,12 +442,12 @@ CENNIK = {
     "nocleg_2_noce": get_price_data("Nocleg (2+ noce)", df_c)["cena"],
     "doplata_domek": 40,
     "domki": {
-        "Muuu 1": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "max_os": 4, "pdf": "krovacja"}, 
-        "Muuu 2": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "max_os": 4, "pdf": "krovacja"},
-        "Muuu 3": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "max_os": 6, "pdf": "krovacja"}, 
-        "Muuu 4": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "max_os": 6, "pdf": "krovacja"},
-        "Muuu 5": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "max_os": 3, "pdf": "krovacja"}, 
-        "Muuu 6": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "max_os": 3, "pdf": "krovacja"}
+        "Muuu 1": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 2": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "pdf": "krovacja"},
+        "Muuu 3": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 4": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "pdf": "krovacja"},
+        "Muuu 5": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 6": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "pdf": "krovacja"}
     },
     "wyzywienie": {
         "Śniadanie": {"dane": get_price_data("Śniadanie", df_c), "pdf": "wyżywienie"},
@@ -425,19 +490,35 @@ except: pass
 st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
+if "zajete_obiekty" not in st.session_state: st.session_state.zajete_obiekty = []
 
 def auto_alloc():
     total = st.session_state.l_osob_total
+    typ = st.session_state.get("typ_klienta_radio", "Indywidualny")
+    
     st.session_state.wybrane_p = []
     st.session_state.wybrane_d = []
+    zajete = st.session_state.zajete_obiekty
+    
     for p, cap in POKOJE_DWOREK.items():
-        if total > 0:
+        if total > 0 and p not in zajete:
             st.session_state.wybrane_p.append(p)
-            val = min(cap, total); st.session_state[f"os_{p}"] = val; total -= val
-    for d, par in CENNIK["domki"].items():
-        if total > 0:
+            val = min(cap, total)
+            st.session_state[f"os_{p}"] = val
+            total -= val
+            
+    if typ == "Biznesowy":
+        max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
+    else:
+        max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
+        
+    for d in max_os_domki.keys():
+        if total > 0 and d not in zajete:
             st.session_state.wybrane_d.append(d)
-            val = min(par["max_os"], total); st.session_state[f"os_{d}"] = val; total -= val
+            cap = max_os_domki[d]
+            val = min(cap, total)
+            st.session_state[f"os_{d}"] = val
+            total -= val
 
 # --- TABS: Kreator / Baza / Cennik ---
 tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edycja Cennika"])
@@ -485,6 +566,7 @@ with tab1:
         c1, c2 = st.columns(2)
         with c1:
             marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"])
+            typ_klienta = st.radio("Typ klienta", ["Indywidualny", "Biznesowy"], horizontal=True, key="typ_klienta_radio")
             klient_imie = st.text_input("Imię i nazwisko osoby kontaktowej *")
             firma_n = st.text_input("Firma (opcjonalnie)")
             st.number_input("Liczba osób", 1, 100, key="l_osob_total")
@@ -495,6 +577,19 @@ with tab1:
             with cd1: d_in = st.date_input("Przyjazd", date.today())
             with cd2: d_out = st.date_input("Wyjazd", date.today()+timedelta(1))
             dni = max(1, (d_out - d_in).days)
+            
+            st.markdown("---")
+            if st.button("🔍 Sprawdź dostępność na żywo (Hotres)"):
+                with st.spinner("Łączenie z bazą rezerwacji..."):
+                    err, zajete = sprawdz_dostepnosc_hotres(d_in, d_out)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state.zajete_obiekty = zajete
+                        if zajete:
+                            st.error(f"🚨 W wybranym terminie następujące obiekty są w całości ZAJĘTE: {', '.join(zajete)}")
+                        else:
+                            st.success("✅ Wszystkie zmapowane obiekty są Dostępne!")
 
     with st.container():
         st.subheader("2. Zakwaterowanie")
@@ -502,16 +597,28 @@ with tab1:
         col_dw, col_dm = st.columns(2)
         osoby_zadeklarowane = 0
         
+        if typ_klienta == "Biznesowy":
+            max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
+        else:
+            max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
+            
         with col_dw:
             p_sel = st.multiselect("Dworek", list(POKOJE_DWOREK.keys()), key="wybrane_p")
+            if any(p in st.session_state.zajete_obiekty for p in p_sel):
+                st.error("⚠️ UWAGA: Zaznaczyłeś pokój zablokowany w Hotres!")
+                
             for p in p_sel:
-                ile = st.number_input(f"{p}", 1, POKOJE_DWOREK[p], key=f"os_{p}")
+                ile = st.number_input(f"{p} (Max: {POKOJE_DWOREK[p]})", 1, POKOJE_DWOREK[p], key=f"os_{p}")
                 osoby_zadeklarowane += ile
                 pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p}", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
         with col_dm:
-            d_sel = st.multiselect("Domki", list(CENNIK["domki"].keys()), key="wybrane_d")
+            d_sel = st.multiselect("Domki Krovacja", list(CENNIK["domki"].keys()), key="wybrane_d")
+            if any(d in st.session_state.zajete_obiekty for d in d_sel):
+                st.error("⚠️ UWAGA: Zaznaczyłeś domek zablokowany w Hotres!")
+                
             for d in d_sel:
-                ile = st.number_input(f"{d}", 1, CENNIK["domki"][d]["max_os"], key=f"os_{d}")
+                cap_domku = max_os_domki[d]
+                ile = st.number_input(f"{d} (Max w tej opcji: {cap_domku})", 1, cap_domku, key=f"os_{d}")
                 osoby_zadeklarowane += ile
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
                 pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": "krovacja"})
@@ -704,10 +811,14 @@ with tab1:
                             
                             if has_dworek and has_krovacja: 
                                 add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             elif has_dworek: 
                                 add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             elif has_krovacja: 
                                 add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                             if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
                                 if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
@@ -776,7 +887,7 @@ with tab1:
                             add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                             add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
-                            if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono niektórych kart: {', '.join(missing_cards)}")
+                            if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono niektórych kart (upewnij się, że nazwy plików dokładnie się zgadzają): {', '.join(missing_cards)}")
 
                             final_pdf = io.BytesIO()
                             merger.write(final_pdf)
