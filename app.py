@@ -349,29 +349,30 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
         api_key = st.secrets["hotres"]["api"]
         auth_key = st.secrets["hotres"]["auth"]
     except KeyError:
-        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets aplikacji Streamlit.", []
+        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w pliku secrets.toml.", []
     
-    # Dla pewności przesyłamy zakres w parametrach time_from i time_to 
-    url = f"https://panel.hotres.pl/api_availability?api={api_key}&auth={auth_key}&time_from={data_od.strftime('%Y-%m-%d')}&time_to={data_do.strftime('%Y-%m-%d')}"
+    # Budujemy CZYSTY link, dokładnie taki jak podałeś z panelu (bez dodawania dat)
+    url = f"https://panel.hotres.pl/api_availability?api={api_key}&auth={auth_key}"
     
     try:
+        # Pytamy Hotres (metoda GET)
         response = requests.get(url, timeout=15)
+        
         if response.status_code == 200:
             dane = response.json()
             zajete_obiekty = set()
             
-            # Tworzymy listę dat w których klient faktycznie nocuje (bez dnia wyjazdu)
+            # Tworzymy listę dat, w których klient nocuje
             liczba_nocy = max(1, (data_do - data_od).days)
             wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
             
+            # Sprawdzamy dostępność lokalnie w pobranych z Hotres danych
             for room_data in dane:
                 room_id = room_data.get("type_id")
-                # Sprawdzamy czy to jeden z naszych zmapowanych obiektów
                 nazwa_pokoju = HOTRES_ROOM_MAP.get(room_id, f"ID_{room_id}")
                 
                 for day_data in room_data.get("dates", []):
                     data_dnia = day_data.get("date")
-                    # Zabezpieczenie przed dziwnymi formatami z Hotres (czasami float/string)
                     dostepnosc = int(float(day_data.get("available", 0))) 
                     
                     if data_dnia in wymagane_daty and dostepnosc <= 0:
@@ -379,10 +380,13 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
                         
             return "", list(zajete_obiekty)
         else:
-            return f"Hotres odrzucił połączenie. Kod błędu: {response.status_code}", []
+            # Tryb debugowania - ukrywamy część klucza API, żebyś mógł bezpiecznie sprawdzić konstrukcję linku
+            safe_api = api_key[:4] + "..." if len(api_key) > 4 else "***"
+            safe_url = f"https://panel.hotres.pl/api_availability?api={safe_api}&auth=***"
+            return f"Błąd {response.status_code}. Serwer odrzucił adres: {safe_url} (Sprawdź, czy adres w dokumentacji ma końcówkę np. .php)", []
+            
     except Exception as e:
         return f"Błąd komunikacji z Hotres: {str(e)}", []
-
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
 cennik_file = None
