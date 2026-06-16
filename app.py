@@ -42,16 +42,16 @@ ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" 
 
 # =========================================================
-# MAPOWANIE POKOI HOTRES (Automatycznie zsynchronizowane)
+# MAPOWANIE POKOI HOTRES
 # =========================================================
 HOTRES_ROOM_MAP = {
     29952: "Krovacja - cały kompleks",
-    37951: "Muuu6/Domek6",
-    37950: "Muuu5/Domek5",
-    25074: "Muuu4/ Domek4",
-    25073: "Muuu3/ Domek3",
-    25072: "Muuu2/ Domek2",
-    25071: "Muuu1/ Domek1",
+    37951: "Muuu 6",
+    37950: "Muuu 5",
+    25074: "Muuu 4",
+    25073: "Muuu 3",
+    25072: "Muuu 2",
+    25071: "Muuu 1",
     27589: "Ognisko #1",
     27588: "Strefa relaksu - balia #1",
     31294: "Strefa relaksu - balia #2",
@@ -139,7 +139,7 @@ def upload_pdf_to_drive(file_bytes, filename, folder_id):
             body={'type': 'anyone', 'role': 'reader'},
             supportsAllDrives=True
         ).execute()
-    except Exception as e:
+    except Exception:
         pass
         
     return file
@@ -361,12 +361,11 @@ def get_price_data(usluga_name, df):
     return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
 
 def sprawdz_dostepnosc_hotres(data_od, data_do):
-    """Odpytuje API Hotres i zwraca listę ZAJĘTYCH obiektów (wg naszego mapowania)"""
     try:
         api_key = st.secrets["hotres"]["api"]
         auth_key = st.secrets["hotres"]["auth"]
     except KeyError:
-        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets aplikacji Streamlit.", []
+        return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets.", {}
     
     url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
     
@@ -375,30 +374,33 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
         
         if response.status_code == 200:
             dane = response.json()
-            zajete_obiekty = set()
+            szczegoly_zajetosci = {}
             
             liczba_nocy = max(1, (data_do - data_od).days)
             wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
             
             for room_data in dane:
                 room_id = room_data.get("type_id")
-                nazwa_pokoju = HOTRES_ROOM_MAP.get(room_id, f"ID_{room_id}")
+                nazwa_pokoju = HOTRES_ROOM_MAP.get(int(room_id) if str(room_id).isdigit() else room_id, f"ID_{room_id}")
                 
                 for day_data in room_data.get("dates", []):
                     data_dnia = day_data.get("date")
                     dostepnosc = int(float(day_data.get("available", 0))) 
                     
                     if data_dnia in wymagane_daty and dostepnosc <= 0:
-                        zajete_obiekty.add(nazwa_pokoju)
+                        if nazwa_pokoju not in szczegoly_zajetosci:
+                            szczegoly_zajetosci[nazwa_pokoju] = []
+                        szczegoly_zajetosci[nazwa_pokoju].append(data_dnia)
                         
-            return "", list(zajete_obiekty)
+            return "", szczegoly_zajetosci
         else:
-            safe_api = api_key[:4] + "..." if len(api_key) > 4 else "***"
-            safe_url = f"https://panel.hotres.pl/api_availability?auth=***&apikey={safe_api}"
-            return f"Błąd {response.status_code}. Serwer odrzucił adres: {safe_url}", []
+            return f"Hotres zwrócił kod: {response.status_code}", {}
             
     except Exception as e:
-        return f"Błąd komunikacji z Hotres: {str(e)}", []
+        return f"Błąd komunikacji z Hotres: {str(e)}", {}
+
+def format_zajete_daty(lista_dat):
+    return ", ".join([f"{d[8:10]}.{d[5:7]}" for d in sorted(lista_dat)])
 
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
@@ -507,35 +509,47 @@ except: pass
 st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
-if "zajete_obiekty" not in st.session_state: st.session_state.zajete_obiekty = []
+if "szczegoly_zajetosci" not in st.session_state: st.session_state.szczegoly_zajetosci = {}
 
 def auto_alloc():
     total = st.session_state.l_osob_total
     typ = st.session_state.get("typ_klienta_radio", "Indywidualny")
+    marka = st.session_state.get("marka_oferty_select", "Dwór Dębogóra")
+    zajete_slownik = st.session_state.szczegoly_zajetosci
+    zajete = list(zajete_slownik.keys())
     
     st.session_state.wybrane_p = []
     st.session_state.wybrane_d = []
-    zajete = st.session_state.zajete_obiekty
-    
-    for p, cap in POKOJE_DWOREK.items():
-        if total > 0 and p not in zajete:
-            st.session_state.wybrane_p.append(p)
-            val = min(cap, total)
-            st.session_state[f"os_{p}"] = val
-            total -= val
             
     if typ == "Biznesowy":
         max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
     else:
         max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
         
-    for d in max_os_domki.keys():
-        if total > 0 and d not in zajete:
-            st.session_state.wybrane_d.append(d)
-            cap = max_os_domki[d]
-            val = min(cap, total)
-            st.session_state[f"os_{d}"] = val
-            total -= val
+    def przydziel_dworek(osoby):
+        for p, cap in POKOJE_DWOREK.items():
+            if osoby > 0 and p not in zajete:
+                st.session_state.wybrane_p.append(p)
+                val = min(cap, osoby)
+                st.session_state[f"os_{p}"] = val
+                osoby -= val
+        return osoby
+        
+    def przydziel_domki(osoby):
+        for d, cap in max_os_domki.items():
+            if osoby > 0 and d not in zajete:
+                st.session_state.wybrane_d.append(d)
+                val = min(cap, osoby)
+                st.session_state[f"os_{d}"] = val
+                osoby -= val
+        return osoby
+
+    if marka == "Dwór Dębogóra":
+        total = przydziel_dworek(total)
+        total = przydziel_domki(total)
+    else:
+        total = przydziel_domki(total)
+        total = przydziel_dworek(total)
 
 # --- TABS: Kreator / Baza / Cennik ---
 tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edycja Cennika"])
@@ -582,7 +596,7 @@ with tab1:
 
         c1, c2 = st.columns(2)
         with c1:
-            marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"])
+            marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"], key="marka_oferty_select")
             typ_klienta = st.radio("Typ klienta", ["Indywidualny", "Biznesowy"], horizontal=True, key="typ_klienta_radio")
             klient_imie = st.text_input("Imię i nazwisko osoby kontaktowej *")
             firma_n = st.text_input("Firma (opcjonalnie)")
@@ -598,15 +612,15 @@ with tab1:
             st.markdown("---")
             if st.button("🔍 Sprawdź dostępność na żywo (Hotres)"):
                 with st.spinner("Łączenie z bazą rezerwacji..."):
-                    err, zajete = sprawdz_dostepnosc_hotres(d_in, d_out)
+                    err, zajete_szczegoly = sprawdz_dostepnosc_hotres(d_in, d_out)
                     if err:
                         st.error(err)
                     else:
-                        st.session_state.zajete_obiekty = zajete
-                        if zajete:
-                            st.error(f"🚨 W wybranym terminie następujące obiekty są ZAJĘTE: {', '.join(zajete)}")
+                        st.session_state.szczegoly_zajetosci = zajete_szczegoly
+                        if zajete_szczegoly:
+                            st.warning(f"🚨 W wybranym terminie wykryto zablokowane obiekty. Listę zobaczysz poniżej w sekcji zakwaterowania.")
                         else:
-                            st.success("✅ Wszystkie zmapowane obiekty są WOLNE w tym terminie!")
+                            st.success("✅ Wszystkie zmapowane obiekty są w 100% WOLNE w tym terminie!")
 
     with st.container():
         st.subheader("2. Zakwaterowanie")
@@ -614,24 +628,40 @@ with tab1:
         col_dw, col_dm = st.columns(2)
         osoby_zadeklarowane = 0
         
+        zajete_slownik = st.session_state.szczegoly_zajetosci
+        zajete_nazwy = list(zajete_slownik.keys())
+        
         if typ_klienta == "Biznesowy":
             max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
         else:
             max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
             
         with col_dw:
-            p_sel = st.multiselect("Dworek", list(POKOJE_DWOREK.keys()), key="wybrane_p")
-            if any(p in st.session_state.zajete_obiekty for p in p_sel):
-                st.error("⚠️ UWAGA: Zaznaczyłeś pokój zablokowany w Hotres!")
-                
+            dostepne_p = [p for p in POKOJE_DWOREK.keys() if p not in zajete_nazwy]
+            p_sel = st.multiselect("Dworek (Dostępne pokoje)", dostepne_p, key="wybrane_p")
+            
+            zajete_p_do_wyswietlenia = {p: zajete_slownik[p] for p in POKOJE_DWOREK.keys() if p in zajete_slownik}
+            if zajete_p_do_wyswietlenia:
+                st.markdown("<small style='color:red;'>Niedostępne ze względu na kalendarz Hotres:</small>", unsafe_allow_html=True)
+                for p, daty in zajete_p_do_wyswietlenia.items():
+                    st.markdown(f"<small style='color:gray;'>❌ {p} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+
             for p in p_sel:
                 ile = st.number_input(f"{p} (Max: {POKOJE_DWOREK[p]})", 1, POKOJE_DWOREK[p], key=f"os_{p}")
                 osoby_zadeklarowane += ile
                 pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p}", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
+                
         with col_dm:
-            d_sel = st.multiselect("Domki Krovacja", list(CENNIK["domki"].keys()), key="wybrane_d")
-            if any(d in st.session_state.zajete_obiekty for d in d_sel):
-                st.error("⚠️ UWAGA: Zaznaczyłeś domek zablokowany w Hotres!")
+            dostepne_d = [d for d in CENNIK["domki"].keys() if d not in zajete_nazwy]
+            d_sel = st.multiselect("Domki Krovacja (Dostępne)", dostepne_d, key="wybrane_d")
+            
+            zajete_d_do_wyswietlenia = {d: zajete_slownik[d] for d in CENNIK["domki"].keys() if d in zajete_slownik}
+            if zajete_d_do_wyswietlenia:
+                st.markdown("<small style='color:red;'>Niedostępne ze względu na kalendarz Hotres:</small>", unsafe_allow_html=True)
+                for d, daty in zajete_d_do_wyswietlenia.items():
+                    st.markdown(f"<small style='color:gray;'>❌ {d} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
                 
             for d in d_sel:
                 cap_domku = max_os_domki[d]
