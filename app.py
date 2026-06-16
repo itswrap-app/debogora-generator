@@ -42,19 +42,43 @@ ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"
 BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" 
 
 # =========================================================
-# MAPOWANIE POKOI HOTRES (Uzupełnij właściwe ID z panelu!)
+# MAPOWANIE POKOI HOTRES Z TWOJEGO PANELU
 # =========================================================
 HOTRES_ROOM_MAP = {
-    # Przykładowe ID. Zamień na te wyciągnięte z Twojego API.
-    29411: "Muuu 1",
-    29412: "Muuu 2",
-    29413: "Muuu 3",
-    29414: "Muuu 4",
-    29415: "Muuu 5",
-    29416: "Muuu 6",
-    # Analogicznie dodaj ID dla Dworku, jeśli są w Hotres:
-    # 30001: "Pokój nr 1",
-    # 30002: "Pokój nr 2"
+    # DWÓR DĘBOGÓRA - POKOJE
+    39260: "Pokój nr 1",
+    39261: "Pokój nr 2",
+    39262: "Pokój nr 3",
+    39263: "Pokój nr 4",
+    39264: "Pokój nr 5",
+    39265: "Pokój nr 6",
+    41343: "Pokój nr 7",
+    39267: "Pokój nr 8",
+    39268: "Pokój nr 9",
+    39269: "Pokój nr 10",
+    39270: "Pokój nr 11",
+    39271: "Pokój nr 12",
+    
+    # KROVACJA - DOMKI
+    43197: "Muuu 1",
+    43198: "Muuu 2",
+    43210: "Muuu 3",
+    43200: "Muuu 4",
+    62015: "Muuu 5",
+    62019: "Muuu 6",
+
+    # INNE OBIEKTY (Dla przyszłych walidacji agendy i atrakcji)
+    41293: "Oranżeria",
+    41290: "Sala kominkowa",
+    41292: "Sala bankietowa",
+    52272: "Sala wielofunkcyjna",
+    50286: "Krovacja- cały kompleks",
+    52273: "Dwór - cały obiekt",
+    52275: "Strefa relaksu - balia #1",
+    52483: "Strefa relaksu - balia #2",
+    46920: "Ognisko #1",
+    52482: "Ognisko #2",
+    52274: "Łaźnia eventowa"
 }
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
@@ -351,22 +375,18 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
     except KeyError:
         return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets aplikacji Streamlit.", []
     
-    # Poprawiony, właściwy link z 'apikey' zamiast 'api'
     url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
     
     try:
-        # Pytamy Hotres (metoda GET)
         response = requests.get(url, timeout=15)
         
         if response.status_code == 200:
             dane = response.json()
             zajete_obiekty = set()
             
-            # Tworzymy listę dat, w których klient nocuje
             liczba_nocy = max(1, (data_do - data_od).days)
             wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
             
-            # Sprawdzamy dostępność lokalnie w pobranych z Hotres danych
             for room_data in dane:
                 room_id = room_data.get("type_id")
                 nazwa_pokoju = HOTRES_ROOM_MAP.get(room_id, f"ID_{room_id}")
@@ -380,14 +400,13 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
                         
             return "", list(zajete_obiekty)
         else:
-            # Tryb debugowania
             safe_api = api_key[:4] + "..." if len(api_key) > 4 else "***"
             safe_url = f"https://panel.hotres.pl/api_availability?auth=***&apikey={safe_api}"
             return f"Błąd {response.status_code}. Serwer odrzucił adres: {safe_url}", []
             
     except Exception as e:
         return f"Błąd komunikacji z Hotres: {str(e)}", []
-        
+
 # --- POŁĄCZENIE Z DYSKIEM ---
 wszystkie_pliki = []
 cennik_file = None
@@ -592,9 +611,9 @@ with tab1:
                     else:
                         st.session_state.zajete_obiekty = zajete
                         if zajete:
-                            st.error(f"🚨 W wybranym terminie następujące obiekty są w całości ZAJĘTE: {', '.join(zajete)}")
+                            st.error(f"🚨 W wybranym terminie następujące obiekty są ZAJĘTE: {', '.join(zajete)}")
                         else:
-                            st.success("✅ Wszystkie zmapowane obiekty są Dostępne!")
+                            st.success("✅ Wszystkie zmapowane obiekty są WOLNE w tym terminie!")
 
     with st.container():
         st.subheader("2. Zakwaterowanie")
