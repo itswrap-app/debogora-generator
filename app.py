@@ -9,6 +9,7 @@ import time
 import re
 import glob
 import requests
+import json
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -28,7 +29,7 @@ import reportlab.rl_config
 
 reportlab.rl_config.warnOnMissingFontGlyphs = 0
 
-st.set_page_config(page_title="Generator Ofert - Dwór Dębogóra", layout="wide")
+st.set_page_config(page_title="PLANER OFERT - Dwór Dębogóra", layout="wide")
 
 CI = {
     "dark_green": "#00622f",
@@ -73,6 +74,18 @@ HOTRES_ROOM_MAP = {
     22156: "Pokój nr 12",
     31229: "Dwór - cały obiekt"
 }
+
+# Inverse map to get IDs for Reservation push
+HOTRES_ROOM_NAME_TO_ID = {v: k for k, v in HOTRES_ROOM_MAP.items()}
+
+# --- INITIALIZE SESSION STATE FOR RELOADING OFFERS ---
+if "klient_imie" not in st.session_state: st.session_state.klient_imie = ""
+if "firma_n" not in st.session_state: st.session_state.firma_n = ""
+if "nip_n" not in st.session_state: st.session_state.nip_n = ""
+if "telefon_n" not in st.session_state: st.session_state.telefon_n = ""
+if "email_n" not in st.session_state: st.session_state.email_n = ""
+if "loaded_pozycje" not in st.session_state: st.session_state.loaded_pozycje = None
+if "agenda_custom_text" not in st.session_state: st.session_state.agenda_custom_text = ""
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
 FONT_HEADER = 'Helvetica-Bold'
@@ -120,28 +133,21 @@ def get_drive_service():
     creds = SACredentials.from_service_account_info(info)
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_baza_files(baza_id):
     service = get_drive_service()
     query = f"'{baza_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink)", orderBy="createdTime desc", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink, mimeType)", orderBy="createdTime desc", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     return results.get('files', [])
 
-def upload_pdf_to_drive(file_bytes, filename, folder_id):
+def upload_file_to_drive(file_bytes, filename, folder_id, mimetype='application/pdf'):
     service = get_drive_service()
-    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=True)
     file_metadata = {'name': filename, 'parents': [folder_id]}
     file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
-    
     try:
-        service.permissions().create(
-            fileId=file.get('id'),
-            body={'type': 'anyone', 'role': 'reader'},
-            supportsAllDrives=True
-        ).execute()
-    except Exception:
-        pass
-        
+        service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
+    except Exception: pass
     return file
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -245,8 +251,9 @@ SYNONYMS = {
     "kontakt": "AsystentAI_kontakt", 
     "uklad_debogora": "AsystentAI_układ łóżek_Dębogóra",
     "uklad_krovacja": "AsystentAI_układ łóżek_Krovacja",
-    "ZłodziejKrów": "złodziej", 
-    "Łowcy krów": "złodziej", 
+    "Złodziej Krów": "złodziej", 
+    "Złodziej krów": "złodziej",
+    "Łowcy krów": "złodziej",
     "Skarby": "skarby", 
     "Safari_Standard": "safari dla grup_standard",
     "Safari_Rozszerzona": "safari dla grup_rozszerzona",
@@ -261,10 +268,8 @@ SYNONYMS = {
 def get_file_by_keyword(keyword, all_files):
     norm_search = normalize_pl(SYNONYMS.get(keyword, keyword))
     matches = [f for f in all_files if norm_search in normalize_pl(f['name'])]
-    
     if keyword == "atrakcje_wstęp":
         matches = [f for f in matches if "wodzi" not in normalize_pl(f['name'])]
-        
     if matches:
         matches.sort(key=lambda x: len(x['name']))
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
@@ -308,6 +313,11 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
 def get_price_data(usluga_name, df):
+    # Fallback mappings for rename safety
+    search_names = [usluga_name.lower()]
+    if "złodziej" in usluga_name.lower() or "łowcy" in usluga_name.lower():
+        search_names.extend(["złodziej krów", "łowcy krów", "łowcy krów"])
+        
     if df is None or df.empty: return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
     try:
         col_name = next((c for c in df.columns if 'nazwa' in c.lower() or 'usługa' in c.lower() or 'usluga' in c.lower()), None)
@@ -316,9 +326,9 @@ def get_price_data(usluga_name, df):
         col_kiedy = next((c for c in df.columns if 'kiedy' in c.lower() or 'zacząć' in c.lower() or 'zaczac' in c.lower()), None)
         
         if col_name and col_price:
-            match = df[df[col_name].astype(str).str.strip().str.lower() == usluga_name.lower()]
+            match = df[df[col_name].astype(str).str.strip().str.lower().isin(search_names)]
             if match.empty:
-                match = df[df[col_name].astype(str).str.lower().str.contains(usluga_name.lower(), na=False)]
+                match = df[df[col_name].astype(str).str.lower().str.contains(usluga_name.lower()[:5], na=False)]
                 
             if not match.empty:
                 val = match.iloc[0][col_price]
@@ -349,13 +359,6 @@ def get_price_data(usluga_name, df):
                     elif len(m) == 1:
                         min_start = float(m[0])
                         max_start = 22.0
-                
-                if "ognisko" in usluga_name.lower() or "balia" in usluga_name.lower():
-                    min_start = max(16.0, min_start)
-                    max_start = max(22.0, max_start)
-                if "kajaki" in usluga_name.lower():
-                    max_start = min(14.0, max_start)
-                
                 return {"cena": cena, "czas": czas_num, "min_start": min_start, "max_start": max_start}
     except Exception: pass
     return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
@@ -366,38 +369,67 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
         auth_key = st.secrets["hotres"]["auth"]
     except KeyError:
         return "Błąd: Zdefiniuj wpisy [hotres] api='...' oraz auth='...' w konfiguracji Secrets.", {}
-    
     url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
-    
     try:
         response = requests.get(url, timeout=15)
-        
         if response.status_code == 200:
             dane = response.json()
             szczegoly_zajetosci = {}
-            
             liczba_nocy = max(1, (data_do - data_od).days)
             wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
-            
             for room_data in dane:
                 room_id = room_data.get("type_id")
                 nazwa_pokoju = HOTRES_ROOM_MAP.get(int(room_id) if str(room_id).isdigit() else room_id, f"ID_{room_id}")
-                
                 for day_data in room_data.get("dates", []):
                     data_dnia = day_data.get("date")
                     dostepnosc = int(float(day_data.get("available", 0))) 
-                    
                     if data_dnia in wymagane_daty and dostepnosc <= 0:
                         if nazwa_pokoju not in szczegoly_zajetosci:
                             szczegoly_zajetosci[nazwa_pokoju] = []
                         szczegoly_zajetosci[nazwa_pokoju].append(data_dnia)
-                        
             return "", szczegoly_zajetosci
         else:
             return f"Hotres zwrócił kod: {response.status_code}", {}
-            
     except Exception as e:
-        return f"Błąd komunikacji z Hotres: {str(e)}", {}
+        return f"Błąd komunikacji z Hotres: {str(e)}", []
+
+def utworz_rezerwacje_hotres(data_od, data_do, wybrane_pokoje_i_domki):
+    try:
+        api_key = st.secrets["hotres"]["api"]
+        auth_key = st.secrets["hotres"]["auth"]
+    except KeyError:
+        return "Błąd kluczy autoryzacji Hotres w pliku konfiguracyjnym."
+        
+    url = f"https://panel.hotres.pl/api_reservations?auth={auth_key}&apikey={api_key}"
+    
+    pokoje_payload = []
+    for rname in wybrane_pokoje_i_domki:
+        tid = HOTRES_ROOM_NAME_TO_ID.get(rname)
+        if tid:
+            pokoje_payload.append({"type_id": str(tid), "count": "1"})
+
+    payload = {
+        "arrival": data_od.strftime("%Y-%m-%d"),
+        "departure": data_do.strftime("%Y-%m-%d"),
+        "rooms": pokoje_payload,
+        "customer": {
+            "name": st.session_state.klient_imie,
+            "company": st.session_state.firma_n,
+            "nip": st.session_state.nip_n,
+            "phone": st.session_state.telefon_n,
+            "email": st.session_state.email_n
+        },
+        "status": "1" # Status wstępnej rezerwacji / blokady block
+    }
+    
+    try:
+        res = requests.post(url, json=payload, timeout=15)
+        if res.status_code in [200, 201]:
+            return "OK"
+        else:
+            return f"Serwer Hotres zgłosił błąd: {res.text}"
+    except Exception as e:
+        return f"Nie udało się połączyć z API Hotres: {str(e)}"
 
 def format_zajete_daty(lista_dat):
     return ", ".join([f"{d[8:10]}.{d[5:7]}" for d in sorted(lista_dat)])
@@ -409,23 +441,18 @@ cennik_file = None
 try:
     with st.spinner("Skanowanie plików na Dysku Google (Zabezpieczam czcionki)..."):
         wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
-        
         czcionki_do_pobrania = ['Lora-Bold.ttf', 'PTSans-Regular.ttf', 'PTSans-Bold.ttf']
         pobrano_nowe = False
         for f in wszystkie_pliki:
             if f['name'] in czcionki_do_pobrania and not os.path.exists(f['name']):
                 fh = download_file(f['id'])
-                with open(f['name'], 'wb') as out:
-                    out.write(fh.getvalue())
+                with open(f['name'], 'wb') as out: out.write(fh.getvalue())
                 pobrano_nowe = True
-                
-        if pobrano_nowe:
-            register_custom_fonts()
+        if pobrano_nowe: register_custom_fonts()
 
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
-    if cennik_files:
-        cennik_file = cennik_files[0]
+    if cennik_files: cennik_file = cennik_files[0]
 except Exception as e:
     st.sidebar.error(f"Błąd połączenia z Drive: {e}")
 
@@ -449,7 +476,7 @@ with st.sidebar:
     st.header("🗂️ Karty Produktów")
     with st.expander("Rozwiń pliki do pobrania"):
         if wszystkie_pliki:
-            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder' and '.ttf' not in f['name'].lower()]
+            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder' and '.ttf' not in f['name'].lower() and '.json' not in f['name'].lower()]
             for f in sorted(pliki_do_pobrania, key=lambda x: x['name']):
                 link = f.get('webViewLink', '#')
                 st.markdown(f"📄 [{f['name']}]({link})")
@@ -485,7 +512,7 @@ CENNIK = {
         "Masaż gorącą świecą": {"dane": get_price_data("Masaż gorącą świecą", df_c), "typ": "osoba", "pdf": "Masaże"},
     },
     "Atrakcje": {
-        "Łowcy krów": {"dane": get_price_data("Łowcy krów", df_c), "typ": "osoba", "pdf": "Łowcy krów"},
+        "Złodziej Krów": {"dane": get_price_data("Złodziej Krów", df_c), "typ": "osoba", "pdf": "Łowcy krów"},
         "Skarby Dębogóry": {"dane": get_price_data("Skarby Dębogóry", df_c), "typ": "osoba", "pdf": "Skarby"},
         "Krowie Safari Standard": {"dane": get_price_data("Krowie Safari Standard", df_c), "typ": "osoba", "pdf": "Safari_Standard"},
         "Krowie Safari Rozszerzone": {"dane": get_price_data("Krowie Safari Rozszerzone", df_c), "typ": "osoba", "pdf": "Safari_Rozszerzona"},
@@ -506,7 +533,7 @@ try:
     logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
     st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
 except: pass
-st.markdown("<h1 style='text-align: center; margin-top:0;'>System Ofertowania</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; margin-top:0;'>PLANER OFERT</h1>", unsafe_allow_html=True)
 
 if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
 if "szczegoly_zajetosci" not in st.session_state: st.session_state.szczegoly_zajetosci = {}
@@ -556,7 +583,7 @@ tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edy
 
 with tab2:
     st.subheader("Edycja pliku Cennika (Google Drive)")
-    if df_c is not None:
+    if df_c又不 None:
         edited_df = st.data_editor(df_c, num_rows="dynamic", use_container_width=True)
         if st.button("💾 ZAPISZ ZMIANY NA DYSKU", type="primary"):
             update_file_on_drive(cennik_file['id'], edited_df, cennik_file['name'])
@@ -564,17 +591,39 @@ with tab2:
             st.success("Zmiany zapisane!")
 
 with tab3:
-    st.subheader("Baza Wygenerowanych Ofert")
-    if st.button("🔄 Odśwież bazę"):
+    st.subheader("Baza i Historia Wygenerowanych Ofert")
+    if st.button("🔄 Odśwież listę archiwalną"):
         fetch_baza_files.clear()
         
     try:
         baza_files = fetch_baza_files(BAZA_OFERT_FOLDER_ID)
-        if not baza_files:
-            st.info("Brak wygenerowanych ofert w bazie. Stwórz pierwszą w Kreatorze Ofert!")
+        pdf_files = [f for f in baza_files if f['mimeType'] == 'application/pdf']
+        json_files = {f['name'].replace('.json', ''): f['id'] for f in baza_files if '.json' in f['name']}
+        
+        if not pdf_files:
+            st.info("Brak zapisanych ofert w bazie.")
         else:
-            for f in baza_files:
-                st.markdown(f"📄 **{f['name']}** - [🔗 Otwórz i pobierz z Google Drive]({f['webViewLink']})")
+            for f in pdf_files:
+                base_key = f['name'].replace('.pdf', '')
+                c_file, c_act = st.columns([3, 2])
+                with c_file:
+                    st.markdown(f"📄 **{f['name']}** - [🔗 Pobierz PDF]({f['webViewLink']})")
+                with c_act:
+                    if base_key in json_files:
+                        if st.button("📂 Przywróć do Kreatora", key=f"load_{f['id']}"):
+                            js_bytes = download_file(json_files[base_key])
+                            meta = json.loads(js_bytes.getvalue().decode('utf-8'))
+                            
+                            st.session_state.klient_imie = meta.get("klient_imie", "")
+                            st.session_state.firma_n = meta.get("firma_n", "")
+                            st.session_state.nip_n = meta.get("nip_n", "")
+                            st.session_state.telefon_n = meta.get("telefon_n", "")
+                            st.session_state.email_n = meta.get("email_n", "")
+                            st.session_state.loaded_pozycje = meta.get("pozycje", [])
+                            st.session_state.agenda_custom_text = meta.get("final_agenda_text", "")
+                            st.session_state.l_osob_total = meta.get("l_osob_total", 10)
+                            st.success(f"Pomyślnie załadowano konfigurację dla: {meta.get('klient_imie')}. Przejdź do pierwszej zakładki!")
+                            st.user_loaded = True
     except Exception as e:
         st.error(f"Nie można załadować bazy: {e}")
 
@@ -589,21 +638,24 @@ with tab1:
         with c_head2:
             if st.button("🧹 Resetuj formularz"):
                 for key in list(st.session_state.keys()):
-                    if key not in ['df_cennik']:
-                        del st.session_state[key]
-                if hasattr(st, "rerun"): st.rerun()
-                elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
+                    if key not in ['df_cennik']: del st.session_state[key]
+                st.rerun()
 
         c1, c2 = st.columns(2)
         with c1:
             marka_oferty = st.selectbox("Marka wiodąca oferty *", ["Dwór Dębogóra", "Krovacja"], key="marka_oferty_select")
             typ_klienta = st.radio("Typ klienta", ["Indywidualny", "Biznesowy"], horizontal=True, key="typ_klienta_radio")
-            klient_imie = st.text_input("Imię i nazwisko osoby kontaktowej *")
-            firma_n = st.text_input("Firma (opcjonalnie)")
+            
+            st.session_state.klient_imie = st.text_input("Imię i nazwisko osoby kontaktowej *", value=st.session_state.klient_imie)
+            st.session_state.firma_n = st.text_input("Firma (opcjonalnie)", value=st.session_state.firma_n)
+            st.session_state.nip_n = st.text_input("NIP firmy (do integracji Hotres)", value=st.session_state.nip_n)
+            
             st.number_input("Liczba osób", 1, 100, key="l_osob_total")
             st.button("🤖 Automatycznie rozmieść gości", on_click=auto_alloc)
         with c2:
-            email_n = st.text_input("Email")
+            st.session_state.email_n = st.text_input("Email", value=st.session_state.email_n)
+            st.session_state.telefon_n = st.text_input("Telefon kontaktowy (do integracji Hotres)", value=st.session_state.telefon_n)
+            
             cd1, cd2 = st.columns(2)
             with cd1: d_in = st.date_input("Przyjazd", date.today())
             with cd2: d_out = st.date_input("Wyjazd", date.today()+timedelta(1))
@@ -613,14 +665,11 @@ with tab1:
             if st.button("🔍 Sprawdź dostępność na żywo (Hotres)"):
                 with st.spinner("Łączenie z bazą rezerwacji..."):
                     err, zajete_szczegoly = sprawdz_dostepnosc_hotres(d_in, d_out)
-                    if err:
-                        st.error(err)
+                    if err: st.error(err)
                     else:
                         st.session_state.szczegoly_zajetosci = zajete_szczegoly
-                        if zajete_szczegoly:
-                            st.warning(f"🚨 W wybranym terminie wykryto zablokowane obiekty. Listę zobaczysz poniżej w sekcji zakwaterowania.")
-                        else:
-                            st.success("✅ Wszystkie zmapowane obiekty są w 100% WOLNE w tym terminie!")
+                        if zajete_szczegoly: st.warning(f"🚨 W wybranym terminie wykryto zablokowane obiekty. Szczegóły poniżej.")
+                        else: st.success("✅ Wszystkie zmapowane obiekty są wolne w tym terminie!")
 
     with st.container():
         st.subheader("2. Zakwaterowanie")
@@ -642,15 +691,13 @@ with tab1:
             
             zajete_p_do_wyswietlenia = {p: zajete_slownik[p] for p in POKOJE_DWOREK.keys() if p in zajete_slownik}
             if zajete_p_do_wyswietlenia:
-                st.markdown("<small style='color:red;'>Niedostępne ze względu na kalendarz Hotres:</small>", unsafe_allow_html=True)
                 for p, daty in zajete_p_do_wyswietlenia.items():
                     st.markdown(f"<small style='color:gray;'>❌ {p} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
 
             for p in p_sel:
                 ile = st.number_input(f"{p} (Max: {POKOJE_DWOREK[p]})", 1, POKOJE_DWOREK[p], key=f"os_{p}")
                 osoby_zadeklarowane += ile
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p}", "Ilość": ile, "Cena": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{p}", "Ilość": ile, "Cena jednostkowa": stawka_dw*dni, "Suma": ile*stawka_dw*dni, "pdf_kw": "dworek"})
                 
         with col_dm:
             dostepne_d = [d for d in CENNIK["domki"].keys() if d not in zajete_nazwy]
@@ -658,21 +705,19 @@ with tab1:
             
             zajete_d_do_wyswietlenia = {d: zajete_slownik[d] for d in CENNIK["domki"].keys() if d in zajete_slownik}
             if zajete_d_do_wyswietlenia:
-                st.markdown("<small style='color:red;'>Niedostępne ze względu na kalendarz Hotres:</small>", unsafe_allow_html=True)
                 for d, daty in zajete_d_do_wyswietlenia.items():
                     st.markdown(f"<small style='color:gray;'>❌ {d} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
                 
             for d in d_sel:
                 cap_domku = max_os_domki[d]
                 ile = st.number_input(f"{d} (Max w tej opcji: {cap_domku})", 1, cap_domku, key=f"os_{d}")
                 osoby_zadeklarowane += ile
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile-1)*CENNIK["doplata_domek"]))*dni
-                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, "Cena": cena_d, "Suma": cena_d, "pdf_kw": "krovacja"})
+                pozycje_kosztowe.append({"Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, "Cena jednostkowa": cena_d, "Suma": cena_d, "pdf_kw": "krovacja"})
 
         overbooking_error = False
         if osoby_zadeklarowane > st.session_state.l_osob_total:
-            st.error(f"⚠️ UWAGA: Przydzieliłeś {osoby_zadeklarowane} miejsc dla {st.session_state.l_osob_total} zadeklarowanych gości. Zmniejsz ilość w noclegach!")
+            st.error(f"⚠️ Przydzieliłeś {osoby_zadeklarowane} miejsc dla {st.session_state.l_osob_total} gości.")
             overbooking_error = True
 
     with st.container():
@@ -681,7 +726,7 @@ with tab1:
         for w in wyz_sel:
             w_data = CENNIK["wyzywienie"][w]["dane"]
             ile = st.number_input(f"Ilość porcji: {w}", 1, 5000, st.session_state.l_osob_total * dni)
-            pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": w, "Ilość": ile, "Cena": w_data["cena"], "Suma": ile*w_data["cena"], "pdf_kw": CENNIK["wyzywienie"][w]["pdf"]})
+            pozycje_kosztowe.append({"Kategoria": "Gastronomia", "Opis": w, "Ilość": ile, "Cena jednostkowa": w_data["cena"], "Suma": ile*w_data["cena"], "pdf_kw": CENNIK["wyzywienie"][w]["pdf"]})
 
     with st.container():
         st.subheader("4. Oferta Dodatkowa (SPAstwisko, Atrakcje, Biznes)")
@@ -692,7 +737,7 @@ with tab1:
             for a in spa_sel:
                 a_data = CENNIK["SPAstwisko"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"spa_{a}")
-                pozycje_kosztowe.append({"Kategoria": "SPAstwisko", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
+                pozycje_kosztowe.append({"Kategoria": "SPAstwisko", "Opis": a, "Ilość": ile, "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
                 wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]})
                 
         with c_atr:
@@ -700,7 +745,7 @@ with tab1:
             for a in atr_sel:
                 a_data = CENNIK["Atrakcje"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"atr_{a}")
-                pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
+                pozycje_kosztowe.append({"Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
                 wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]})
 
         with c_biz:
@@ -708,12 +753,11 @@ with tab1:
             for a in biz_sel:
                 a_data = CENNIK["Biznes"][a]
                 ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"biz_{a}")
-                pozycje_kosztowe.append({"Kategoria": "Biznes", "Opis": a, "Ilość": ile, "Cena": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
+                pozycje_kosztowe.append({"Kategoria": "Biznes", "Opis": a, "Ilość": ile, "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile*a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]})
                 wybrane_atrakcje_agenda.append({"Nazwa": a, "Czas": a_data["dane"]["czas"], "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]})
 
     with st.container():
         st.subheader("5. Generator Harmonogramu (Agenda)")
-        
         liczba_nocy = (d_out - d_in).days
         liczba_dni = liczba_nocy + 1 if liczba_nocy > 0 else 1
         
@@ -729,28 +773,19 @@ with tab1:
             events = []
             curr_h = slot_start_h
             while pending_events and curr_h < slot_end_h:
-                best_idx = -1
-                best_start = -1
-                best_end = -1
-                
+                best_idx, best_start, best_end = -1, -1, -1
                 for i, atr in enumerate(pending_events):
                     prop_start = max(curr_h, atr['MinStart'])
                     prop_end = prop_start + (atr['Czas'] if atr['Czas']>0 else 1.0)
-                    
                     if prop_start <= atr['MaxStart'] and prop_end <= slot_end_h:
-                        best_idx = i
-                        best_start = prop_start
-                        best_end = prop_end
+                        best_idx, best_start, best_end = i, prop_start, prop_end
                         break
-                        
                 if best_idx != -1:
                     atr = pending_events.pop(best_idx)
-                    if best_start > curr_h:
-                        events.append({"Nazwa": "Czas wolny", "Start": curr_h, "End": best_start})
+                    if best_start > curr_h: events.append({"Nazwa": "Czas wolny", "Start": curr_h, "End": best_start})
                     events.append({"Nazwa": atr["Nazwa"], "Start": best_start, "End": best_end})
                     curr_h = best_end
-                else:
-                    break 
+                else: break 
             return events, pending_events
             
         def render_events(events):
@@ -758,204 +793,195 @@ with tab1:
             for e in events: res += f"• {format_time(e['Start'])} - {format_time(e['End'])} : {e['Nazwa']}\n"
             return res
 
-        draft_agenda = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
-
-        if liczba_dni == 1:
-            draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
-            draft_agenda += "• 10:00 - Przyjazd i rozpoczęcie spotkania\n"
-            evs, unassigned = fill_slot(10.5, 18.0, unassigned)
-            draft_agenda += render_events(evs)
-            draft_agenda += "• 18:00 - 19:00 : Obiadokolacja / Czas wolny\n"
-            evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
-            draft_agenda += render_events(evs_eve)
-            draft_agenda += "• 23:00 - Zakończenie pobytu\n"
+        if st.session_state.agenda_custom_text:
+            draft_agenda = st.session_state.agenda_custom_text
         else:
-            draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
-            draft_agenda += "• 15:00 - Przyjazd i Zakwaterowanie\n"
-            evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
-            draft_agenda += render_events(evs)
-            draft_agenda += "• 18:00 - 19:00 : Obiadokolacja\n"
-            evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned) 
-            draft_agenda += render_events(evs_eve)
-            draft_agenda += "\n"
-            
-            for d in range(2, liczba_dni):
-                draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n"
-                draft_agenda += "• 09:00 - 10:00 : Śniadanie\n"
-                evs, unassigned = fill_slot(10.0, 18.0, unassigned) 
-                draft_agenda += render_events(evs)
-                draft_agenda += "• 18:00 - 19:00 : Obiadokolacja\n"
+            draft_agenda = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
+            if liczba_dni == 1:
+                draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 10:00 - Przyjazd\n"
+                evs, unassigned = fill_slot(10.5, 18.0, unassigned)
+                draft_agenda += render_events(evs) + "• 18:00 - 19:00 : Obiadokolacja\n"
                 evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
-                draft_agenda += render_events(evs_eve)
-                draft_agenda += "\n"
-                
-            draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
-            draft_agenda += "• 09:00 - 10:00 : Śniadanie\n"
-            evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
-            draft_agenda += render_events(evs)
-            draft_agenda += "• 13:00 - Wymeldowanie i zakończenie pobytu\n"
+                draft_agenda += render_events(evs_eve) + "• 23:00 - Zakończenie pobytu\n"
+            else:
+                draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 15:00 - Przyjazd i Zakwaterowanie\n"
+                evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
+                draft_agenda += render_events(evs) + "• 18:00 - 19:00 : Obiadokolacja\n"
+                evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned) 
+                draft_agenda += render_events(evs_eve) + "\n"
+                for d in range(2, liczba_dni):
+                    draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n• 09:00 - 10:00 : Śniadanie\n"
+                    evs, unassigned = fill_slot(10.0, 18.0, unassigned) 
+                    draft_agenda += render_events(evs) + "• 18:00 - 19:00 : Obiadokolacja\n"
+                    evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
+                    draft_agenda += render_events(evs_eve) + "\n"
+                draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n• 09:00 - 10:00 : Śniadanie\n"
+                evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
+                draft_agenda += render_events(evs) + "• 13:00 - Wymeldowanie\n"
 
-        if unassigned:
-            draft_agenda += "\n⚠️ OSTRZEŻENIE - BRAK CZASU W GRAFIKU NA:\n"
-            for atr in unassigned:
-                draft_agenda += f"- {atr['Nazwa']} (wymaga {atr['Czas']}h w przedziale {format_time(atr['MinStart'])}-{format_time(atr['MaxStart'])})\n"
-
-        st.info("Poniższy tekst zostanie wklejony w pliku Agenda (z czytelnymi punktami i odstępami).")
-        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=400)
+        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=350)
+        st.session_state.agenda_custom_text = final_agenda_text
 
     with st.container():
-        st.subheader("6. Kosztorys i Eksport")
+        st.subheader("6. Kosztorys, Rezerwacja Hotres i Eksport PDF")
+        
         df = pd.DataFrame(pozycje_kosztowe)
+        if st.session_state.loaded_pozycje is not None:
+            df = pd.DataFrame(st.session_state.loaded_pozycje)
+            st.session_state.loaded_pozycje = None # clear buffer memory
+            
         if not df.empty:
-            edf = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+            df = df[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
+            edf = st.data_editor(df, use_container_width=True, num_rows="dynamic", column_config={
+                "Suma": st.column_config.NumberColumn("Suma (Wyliczana)", disabled=True)
+            })
+            
+            # AUTOMATIC SUM RECALCULATION
+            edf["Ilość"] = pd.to_numeric(edf["Ilość"], errors='coerce').fillna(0)
+            edf["Cena jednostkowa"] = pd.to_numeric(edf["Cena jednostkowa"], errors='coerce').fillna(0)
+            edf["Suma"] = edf["Ilość"] * edf["Cena jednostkowa"]
+            
             razem = edf["Suma"].sum()
             st.markdown(f"<h3 style='color: {CI['dark_green']};'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
             
-            if st.button("GENERUJ FINALNY PDF", disabled=overbooking_error):
-                if not klient_imie: st.error("Podaj imię i nazwisko klienta!")
-                else:
-                    with st.spinner("Pobieranie, kompilacja i zapis plików... (To potrwa kilkanaście sekund)"):
-                        try:
-                            merger = PdfWriter()
-                            open_streams = []
-                            missing_cards = []
-                            added_file_ids = set()
-                            
-                            nazwa_docelowa = firma_n if firma_n else klient_imie
-                            
-                            has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
-                            has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
-                            
-                            if has_dworek and has_krovacja: zakwaterowanie_txt = "domkach i pokojach"
-                            elif has_krovacja: zakwaterowanie_txt = "domkach"
-                            else: zakwaterowanie_txt = "pokojach"
-                                
-                            atr_list = [row["Opis"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
-                            if len(atr_list) >= 2: atrakcje_txt = f"{atr_list[0]} oraz {atr_list[1]}"
-                            elif len(atr_list) == 1: atrakcje_txt = f"{atr_list[0]} oraz otaczającą nas naturę"
-                            else: atrakcje_txt = "spokój, ciszę oraz bliskość natury"
-                                
-                            marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
-                            
-                            replacements = {
-                                "{{nazwa firmy}}": nazwa_docelowa,
-                                "{{Dwór Dębogóra/Krovację}}": marka_wstawka,
-                                "{{Dwór Dębogóra / Krovację}}": marka_wstawka,
-                                "{{domkach/pokojach}}": zakwaterowanie_txt,
-                                "{{domkach / pokojach}}": zakwaterowanie_txt,
-                                "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt,
-                                "{{atrakcja}} i {{atrakcja}}": atrakcje_txt,
-                                "{{Jest nam": "Jest nam",
-                                "stada!}}": "stada!",
-                                "{{przykład agendy}}": final_agenda_text,
-                                "{{ przykład agendy }}": final_agenda_text,
-                                "{{tabela z wyceną dla b2b }}": "",
-                                "{{ tabela z wyceną dla b2b }}": ""
-                            }
-                            
-                            add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                            add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                            
-                            if has_dworek and has_krovacja: 
-                                add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                            elif has_dworek: 
-                                add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                            elif has_krovacja: 
-                                add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                            if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
-                                if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
-                                    add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
-                                for g_kw in gastronomia_kws: add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                            add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                            for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
-                                add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                            buf = io.BytesIO()
-                            doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
-                            elements = []
-                            styles = getSampleStyleSheet()
-
-                            t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
-                            for _, row in edf.iterrows():
-                                t_data.append([safe_str(row["Kategoria"]), safe_str(row["Opis"]), safe_str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
-                            t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
-                            
-                            table = Table(t_data, colWidths=[100, 230, 50, 90])
-                            t_style = TableStyle([
-                                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                                ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER), ('FONTSIZE', (0, 0), (-1, 0), 12),
-                                ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('ALIGN', (1, 1), (1, -2), 'LEFT'),
-                                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('BOTTOMPADDING', (0, 0), (-1, -1), 10), ('TOPPADDING', (0, 0), (-1, -1), 10),
-                                ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT), ('FONTNAME', (2, -1), (-1, -1), FONT_TEXT_BOLD),
-                                ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])), ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
-                                ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
-                            ])
-                            for i in range(1, len(t_data) - 1):
-                                t_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor(CI['light_green']) if i % 2 == 0 else colors.white)
-                                t_style.add('LINEBELOW', (0, i), (-1, i), 0.5, colors.HexColor("#d1d9cf"))
-                            table.setStyle(t_style)
-                            elements.append(table)
-                            doc.build(elements)
-                            buf.seek(0)
-                            
-                            wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
-                            if wycena_file:
-                                try:
-                                    fh = download_file(wycena_file['id'])
-                                    with open("temp_wycena.pptx", "wb") as f: f.write(fh.getvalue())
-                                    prs = Presentation("temp_wycena.pptx")
-                                    replace_text_in_pptx(prs, replacements)
-                                    prs.save("temp_wycena.pptx")
-                                    subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "temp_wycena.pptx"], check=True)
-                                    
-                                    with open("temp_wycena.pdf", "rb") as f: bg_bytes = f.read()
-                                    
-                                    fg_reader = PdfReader(buf)
-                                    for i, fg_page in enumerate(fg_reader.pages):
-                                        bg_stream_fresh = io.BytesIO(bg_bytes)
-                                        open_streams.append(bg_stream_fresh)
-                                        bg_reader = PdfReader(bg_stream_fresh)
-                                        
-                                        bg_idx = min(i, len(bg_reader.pages) - 1)
-                                        bg_page = bg_reader.pages[bg_idx]
-                                        bg_page.merge_page(fg_page)
-                                        merger.add_page(bg_page)
-                                except Exception: merger.append(PdfReader(buf, strict=False))
-                            else: merger.append(PdfReader(buf, strict=False))
-
-                            add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                            add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                            if missing_cards: st.warning(f"⚠️ Uwaga: Na Dysku Google nie odnaleziono niektórych kart (upewnij się, że nazwy plików dokładnie się zgadzają): {', '.join(missing_cards)}")
-
-                            final_pdf = io.BytesIO()
-                            merger.write(final_pdf)
-                            pdf_bytes_to_upload = final_pdf.getvalue()
-                            nazwa_pliku_pdf = f"Oferta_{safe_str(klient_imie).replace(' ', '_')}_{datetime.now().strftime('%d%m%H%M')}.pdf"
-                            
-                            st.success("✅ Oferta w formacie PDF została wygenerowana pomyślnie!")
-                            
-                            st.download_button("📥 POBIERZ SCALONĄ OFERTĘ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
-
+            c_actions1, c_actions2 = st.columns(2)
+            
+            with c_actions1:
+                if st.button("GENERUJ FINALNY PDF Oferty", disabled=overbooking_error, type="primary"):
+                    if not st.session_state.klient_imie: st.error("Podaj imię i nazwisko klienta!")
+                    else:
+                        with st.spinner("Kompilowanie oferty i zapisywanie archiwum..."):
                             try:
-                                upload_pdf_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID)
-                                st.info("✅ Kopia zapasowa oferty została pomyślnie zapisana i opublikowana w chmurze (Folder Krovacja).")
-                                fetch_baza_files.clear()
-                            except Exception as cloud_error:
-                                st.warning(f"⚠️ Kopia nie mogła zostać zapisana w chmurze Google. Twój plik PDF jest gotowy do pobrania powyżej. Błąd: {cloud_error}")
+                                merger = PdfWriter()
+                                open_streams, missing_cards, added_file_ids = [], [], set()
+                                nazwa_docelowa = st.session_state.firma_n if st.session_state.firma_n else st.session_state.klient_imie
+                                
+                                has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
+                                has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
+                                
+                                zakwaterowanie_txt = "domkach i pokojach" if (has_dworek and has_krovacja) else "domkach" if has_krovacja else "pokojach"
+                                atr_list = [row["Opis"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
+                                atrakcje_txt = f"{atr_list[0]} oraz {atr_list[1]}" if len(atr_list) >= 2 else f"{atr_list[0]} oraz naturę" if len(atr_list) == 1 else "spokój i bliskość natury"
+                                marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
+                                
+                                replacements = {
+                                    "{{nazwa firmy}}": nazwa_docelowa, "{{Dwór Dębogóra/Krovację}}": marka_wstawka, "{{domkach/pokojach}}": zakwaterowanie_txt,
+                                    "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt, "{{przykład agendy}}": final_agenda_text, "{{tabela z wyceną dla b2b }}": "", "{{ tabela z wyceną dla b2b }}": ""
+                                }
+                                
+                                add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                
+                                if has_dworek and has_krovacja: 
+                                    add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                    add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                    add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                elif has_dworek: 
+                                    add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                    add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                elif has_krovacja: 
+                                    add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                    add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
-                        except Exception as global_error:
-                            st.error("❌ KRYTYCZNY BŁĄD PODCZAS GENEROWANIA PDF!")
-                            st.error(f"Treść błędu: {str(global_error)}")
-                        finally:
-                            for f in glob.glob("temp_*"):
-                                try: os.remove(f)
-                                except: pass
+                                if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
+                                    if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
+                                        add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                    gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
+                                    for g_kw in gastronomia_kws: add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+
+                                add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
+                                    add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+
+                                buf = io.BytesIO()
+                                doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
+                                elements = []
+
+                                t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
+                                for _, row in edf.iterrows():
+                                    t_data.append([safe_str(row["Kategoria"]), safe_str(row["Opis"]), safe_str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
+                                t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
+                                
+                                table = Table(t_data, colWidths=[110, 220, 50, 90])
+                                table.setStyle(TableStyle([
+                                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                                    ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER), ('FONTSIZE', (0, 0), (-1, 0), 12),
+                                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('ALIGN', (1, 1), (1, -2), 'LEFT'),
+                                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('BOTTOMPADDING', (0, 0), (-1, -1), 10), ('TOPPADDING', (0, 0), (-1, -1), 10),
+                                    ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT), ('FONTNAME', (2, -1), (-1, -1), FONT_TEXT_BOLD),
+                                    ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])), ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
+                                    ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
+                                ]))
+                                elements.append(table)
+                                doc.build(elements)
+                                buf.seek(0)
+                                
+                                wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
+                                if wycena_file:
+                                    try:
+                                        fh = download_file(wycena_file['id'])
+                                        with open("temp_wycena.pptx", "wb") as f: f.write(fh.getvalue())
+                                        prs = Presentation("temp_wycena.pptx")
+                                        replace_text_in_pptx(prs, replacements)
+                                        prs.save("temp_wycena.pptx")
+                                        subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "temp_wycena.pptx"], check=True)
+                                        with open("temp_wycena.pdf", "rb") as f: bg_bytes = f.read()
+                                        fg_reader = PdfReader(buf)
+                                        for i, fg_page in enumerate(fg_reader.pages):
+                                            bg_stream_fresh = io.BytesIO(bg_bytes)
+                                            open_streams.append(bg_stream_fresh)
+                                            bg_reader = PdfReader(bg_stream_fresh)
+                                            bg_page = bg_reader.pages[min(i, len(bg_reader.pages) - 1)]
+                                            bg_page.merge_page(fg_page)
+                                            merger.add_page(bg_page)
+                                    except Exception: merger.append(PdfReader(buf, strict=False))
+                                else: merger.append(PdfReader(buf, strict=False))
+
+                                add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+
+                                final_pdf = io.BytesIO()
+                                merger.write(final_pdf)
+                                pdf_bytes_to_upload = final_pdf.getvalue()
+                                timestamp = datetime.now().strftime('%d%m%H%M')
+                                nazwa_pliku_pdf = f"Oferta_{safe_str(st.session_state.klient_imie).replace(' ', '_')}_{timestamp}.pdf"
+                                nazwa_pliku_json = f"Oferta_{safe_str(st.session_state.klient_imie).replace(' ', '_')}_{timestamp}.json"
+                                
+                                st.success("✅ Oferta w formacie PDF została pomyślnie wygenerowana!")
+                                st.download_button("📥 POBIERZ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
+
+                                # SAVE CONFIGURATION METADATA TO CLOUD
+                                meta_payload = {
+                                    "klient_imie": st.session_state.klient_imie, "firma_n": st.session_state.firma_n, "nip_n": st.session_state.nip_n,
+                                    "telefon_n": st.session_state.telefon_n, "email_n": st.session_state.email_n, "marka_oferty": marka_oferty,
+                                    "typ_klienta": typ_klienta, "l_osob_total": st.session_state.l_osob_total, "final_agenda_text": final_agenda_text,
+                                    "pozycje": edf.to_dict(orient="records")
+                                }
+                                json_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=4).encode('utf-8')
+                                
+                                upload_file_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID, 'application/pdf')
+                                upload_file_to_drive(json_bytes, nazwa_pliku_json, BAZA_OFERT_FOLDER_ID, 'application/json')
+                                st.info("✅ Kopia oraz parametry konfiguracyjne zostały zapisane w chmurze.")
+                                fetch_baza_files.clear()
+                            except Exception as global_error:
+                                st.error(f"❌ Błąd generatora: {str(global_error)}")
+                            finally:
+                                for f in glob.glob("temp_*"):
+                                    try: os.remove(f)
+                                    except: pass
+            
+            with c_actions2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("⚡ PRZEŚLIJ REZERWACJĘ DO HOTRES", type="secondary", use_container_width=True):
+                    wybrane_obiekty = list(st.session_state.get("wybrane_p", [])) + list(st.session_state.get("wybrane_d", []))
+                    if not wybrane_obiekty:
+                        st.error("Wybierz przynajmniej jeden pokój lub domek przed wysłaniem rezerwacji!")
+                    elif not st.session_state.klient_imie or not st.session_state.email_n:
+                        st.error("Dane klienta (Imię i nazwisko oraz Email) są wymagane do utworzenia rezerwacji!")
+                    else:
+                        with st.spinner("Wysyłanie rezerwacji i danych kontrahenta do systemu Hotres..."):
+                            status_res = utworz_rezerwacje_hotres(d_in, d_out, wybrane_obiekty)
+                            if status_res == "OK":
+                                st.success("🎉 Sukces! Wszystkie pokoje/domki oraz dane klienta (w tym Telefon i NIP) zostały wprowadzone do Hotres.")
+                            else:
+                                st.error(status_res)
