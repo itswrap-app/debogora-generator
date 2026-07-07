@@ -724,13 +724,20 @@ with tab3:
         else:
             wiersze_ofert = get_offers_from_sheet(BAZA_OFERT_SHEET_ID)
             
-            if not wiersze_ofert or len(wiersze_ofert) < 2:
+            # Zabezpieczenie przed uciętymi komórkami i nagłówkami
+            poprawne_oferty = []
+            for row in wiersze_ofert:
+                # Wyrównanie wiersza do wymaganych 11 kolumn, by uniknąć błędu braku NIP/maila
+                row_padded = row + [''] * (11 - len(row))
+                
+                # Odczytujemy jako ofertę tylko wiersze, które w pierwszej kolumnie mają datę (zaczynają się od "202...")
+                if str(row_padded[0]).startswith("202"): 
+                    poprawne_oferty.append(row_padded)
+                    
+            if not poprawne_oferty:
                 st.info("Brak zapisanych ofert w Arkuszu Google.")
             else:
-                for idx, row in enumerate(reversed(wiersze_ofert)): 
-                    if len(row) < 11 or idx == len(wiersze_ofert) - 1: 
-                        continue 
-                        
+                for idx, row in enumerate(reversed(poprawne_oferty)): 
                     data_utw, imie, firma, nip, tel, email, marka, typ, osoby, agenda, pozycje_json = row[:11]
                     tytul = f"📄 {data_utw} - {firma if firma else imie} ({osoby} os.)"
                     
@@ -758,7 +765,7 @@ with tab3:
                             st.rerun()
     except Exception as e:
         st.error(f"Nie można załadować bazy z Arkusza: {e}")
-
+        
 with tab1:
     pozycje_kosztowe = []
     wybrane_atrakcje_agenda = []
