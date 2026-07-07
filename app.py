@@ -95,6 +95,10 @@ if "loaded_pozycje" not in st.session_state:
     st.session_state.loaded_pozycje = None
 if "agenda_custom_text" not in st.session_state: 
     st.session_state.agenda_custom_text = ""
+if "l_osob_total" not in st.session_state: 
+    st.session_state.l_osob_total = 10
+if "szczegoly_zajetosci" not in st.session_state: 
+    st.session_state.szczegoly_zajetosci = {}
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
 FONT_HEADER = 'Helvetica-Bold'
