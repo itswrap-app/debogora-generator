@@ -583,7 +583,7 @@ tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edy
 
 with tab2:
     st.subheader("Edycja pliku Cennika (Google Drive)")
-    if df_c又不 None:
+    if df_c is not None:
         edited_df = st.data_editor(df_c, num_rows="dynamic", use_container_width=True)
         if st.button("💾 ZAPISZ ZMIANY NA DYSKU", type="primary"):
             update_file_on_drive(cennik_file['id'], edited_df, cennik_file['name'])
