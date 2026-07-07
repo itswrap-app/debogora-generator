@@ -10,6 +10,7 @@ import re
 import glob
 import requests
 import json
+import shutil
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -75,10 +76,9 @@ HOTRES_ROOM_MAP = {
     31229: "Dwór - cały obiekt"
 }
 
-# Inverse map to get IDs for Reservation push
 HOTRES_ROOM_NAME_TO_ID = {v: k for k, v in HOTRES_ROOM_MAP.items()}
 
-# --- INITIALIZE SESSION STATE FOR RELOADING OFFERS ---
+# --- INICJALIZACJA STANU APLIKACJI ---
 if "klient_imie" not in st.session_state: st.session_state.klient_imie = ""
 if "firma_n" not in st.session_state: st.session_state.firma_n = ""
 if "nip_n" not in st.session_state: st.session_state.nip_n = ""
@@ -92,20 +92,37 @@ FONT_HEADER = 'Helvetica-Bold'
 FONT_TEXT = 'Helvetica'
 FONT_TEXT_BOLD = 'Helvetica-Bold'
 
+def install_fonts_for_libreoffice():
+    """Wgrywa czcionki do systemu Linux, aby LibreOffice miał do nich dostęp podczas konwersji"""
+    fonts_dir = os.path.expanduser('~/.fonts')
+    os.makedirs(fonts_dir, exist_ok=True)
+    copied = False
+    for font_file in glob.glob('*.ttf'):
+        target_path = os.path.join(fonts_dir, font_file)
+        if not os.path.exists(target_path):
+            shutil.copy(font_file, target_path)
+            copied = True
+    if copied:
+        subprocess.run(["fc-cache", "-f"], capture_output=True)
+
 def register_custom_fonts():
+    """Ładuje czcionki do biblioteki ReportLab generującej tabelę"""
     global FONT_HEADER, FONT_TEXT, FONT_TEXT_BOLD
     try:
         if os.path.exists('Lora-Bold.ttf'):
             pdfmetrics.registerFont(TTFont('Lora-Bold', 'Lora-Bold.ttf'))
             FONT_HEADER = 'Lora-Bold'
+    except: pass
+    try:
         if os.path.exists('PTSans-Regular.ttf'):
             pdfmetrics.registerFont(TTFont('PTSans-Regular', 'PTSans-Regular.ttf'))
             FONT_TEXT = 'PTSans-Regular'
+    except: pass
+    try:
         if os.path.exists('PTSans-Bold.ttf'):
             pdfmetrics.registerFont(TTFont('PTSans-Bold', 'PTSans-Bold.ttf'))
             FONT_TEXT_BOLD = 'PTSans-Bold'
-    except Exception:
-        pass
+    except: pass
 
 register_custom_fonts()
 
@@ -126,7 +143,7 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE DRIVE LOGIC ---
+# --- GOOGLE DRIVE LOGIC Z SYSTEMEM RETRY (Ochrona przed SSL error) ---
 @st.cache_resource
 def get_drive_service():
     info = st.secrets["gcp_service_account"]
@@ -137,8 +154,13 @@ def get_drive_service():
 def fetch_baza_files(baza_id):
     service = get_drive_service()
     query = f"'{baza_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink, mimeType)", orderBy="createdTime desc", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    return results.get('files', [])
+    for _ in range(3):
+        try:
+            results = service.files().list(q=query, fields="files(id, name, createdTime, webViewLink, mimeType)", orderBy="createdTime desc", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+            return results.get('files', [])
+        except Exception:
+            time.sleep(1.5)
+    return []
 
 def upload_file_to_drive(file_bytes, filename, folder_id, mimetype='application/pdf'):
     service = get_drive_service()
@@ -158,18 +180,21 @@ def fetch_all_debogora_files(root_id):
     while folders_to_search:
         current_folder = folders_to_search.pop(0)
         query = f"'{current_folder}' in parents and trashed = false"
-        try:
-            request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType, webViewLink)", pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True)
-            while request is not None:
-                results = request.execute()
-                files = results.get('files', [])
-                for f in files:
-                    if f['mimeType'] == 'application/vnd.google-apps.folder':
-                        folders_to_search.append(f['id'])
-                    else:
-                        all_files.append(f)
-                request = service.files().list_next(request, results)
-        except Exception: pass
+        for _ in range(3):
+            try:
+                request = service.files().list(q=query, fields="nextPageToken, files(id, name, mimeType, webViewLink)", pageSize=1000, supportsAllDrives=True, includeItemsFromAllDrives=True)
+                while request is not None:
+                    results = request.execute()
+                    files = results.get('files', [])
+                    for f in files:
+                        if f['mimeType'] == 'application/vnd.google-apps.folder':
+                            folders_to_search.append(f['id'])
+                        else:
+                            all_files.append(f)
+                    request = service.files().list_next(request, results)
+                break
+            except Exception:
+                time.sleep(1.5)
     return all_files
 
 def download_file(file_id, retries=3):
@@ -313,7 +338,6 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
 def safe_str(text): return "" if pd.isna(text) else str(text).strip()
 
 def get_price_data(usluga_name, df):
-    # Fallback mappings for rename safety
     search_names = [usluga_name.lower()]
     if "złodziej" in usluga_name.lower() or "łowcy" in usluga_name.lower():
         search_names.extend(["złodziej krów", "łowcy krów", "łowcy krów"])
@@ -391,7 +415,7 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
         else:
             return f"Hotres zwrócił kod: {response.status_code}", {}
     except Exception as e:
-        return f"Błąd komunikacji z Hotres: {str(e)}", []
+        return f"Błąd komunikacji z Hotres: {str(e)}", {}
 
 def utworz_rezerwacje_hotres(data_od, data_do, wybrane_pokoje_i_domki):
     try:
@@ -419,7 +443,7 @@ def utworz_rezerwacje_hotres(data_od, data_do, wybrane_pokoje_i_domki):
             "phone": st.session_state.telefon_n,
             "email": st.session_state.email_n
         },
-        "status": "1" # Status wstępnej rezerwacji / blokady block
+        "status": "1"
     }
     
     try:
@@ -434,12 +458,12 @@ def utworz_rezerwacje_hotres(data_od, data_do, wybrane_pokoje_i_domki):
 def format_zajete_daty(lista_dat):
     return ", ".join([f"{d[8:10]}.{d[5:7]}" for d in sorted(lista_dat)])
 
-# --- POŁĄCZENIE Z DYSKIEM ---
+# --- POŁĄCZENIE Z DYSKIEM I INSTALACJA CZCIONEK ---
 wszystkie_pliki = []
 cennik_file = None
 
 try:
-    with st.spinner("Skanowanie plików na Dysku Google (Zabezpieczam czcionki)..."):
+    with st.spinner("Skanowanie plików na Dysku Google oraz przygotowywanie systemu czcionek..."):
         wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
         czcionki_do_pobrania = ['Lora-Bold.ttf', 'PTSans-Regular.ttf', 'PTSans-Bold.ttf']
         pobrano_nowe = False
@@ -448,7 +472,12 @@ try:
                 fh = download_file(f['id'])
                 with open(f['name'], 'wb') as out: out.write(fh.getvalue())
                 pobrano_nowe = True
-        if pobrano_nowe: register_custom_fonts()
+                
+        if pobrano_nowe: 
+            register_custom_fonts()
+        
+        # Kluczowe dla naprawy błędu PPTX w LibreOffice:
+        install_fonts_for_libreoffice()
 
     cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
     cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
@@ -598,7 +627,7 @@ with tab3:
     try:
         baza_files = fetch_baza_files(BAZA_OFERT_FOLDER_ID)
         pdf_files = [f for f in baza_files if f['mimeType'] == 'application/pdf']
-        json_files = {f['name'].replace('.json', ''): f['id'] for f in baza_files if '.json' in f['name']}
+        json_files = {f['name'].replace('.pdf', ''): f['id'] for f in baza_files if '.json' in f['name']}
         
         if not pdf_files:
             st.info("Brak zapisanych ofert w bazie.")
@@ -828,7 +857,7 @@ with tab1:
         df = pd.DataFrame(pozycje_kosztowe)
         if st.session_state.loaded_pozycje is not None:
             df = pd.DataFrame(st.session_state.loaded_pozycje)
-            st.session_state.loaded_pozycje = None # clear buffer memory
+            st.session_state.loaded_pozycje = None
             
         if not df.empty:
             df = df[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
@@ -950,19 +979,23 @@ with tab1:
                                 st.success("✅ Oferta w formacie PDF została pomyślnie wygenerowana!")
                                 st.download_button("📥 POBIERZ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
-                                # SAVE CONFIGURATION METADATA TO CLOUD
-                                meta_payload = {
-                                    "klient_imie": st.session_state.klient_imie, "firma_n": st.session_state.firma_n, "nip_n": st.session_state.nip_n,
-                                    "telefon_n": st.session_state.telefon_n, "email_n": st.session_state.email_n, "marka_oferty": marka_oferty,
-                                    "typ_klienta": typ_klienta, "l_osob_total": st.session_state.l_osob_total, "final_agenda_text": final_agenda_text,
-                                    "pozycje": edf.to_dict(orient="records")
-                                }
-                                json_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=4).encode('utf-8')
-                                
-                                upload_file_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID, 'application/pdf')
-                                upload_file_to_drive(json_bytes, nazwa_pliku_json, BAZA_OFERT_FOLDER_ID, 'application/json')
-                                st.info("✅ Kopia oraz parametry konfiguracyjne zostały zapisane w chmurze.")
-                                fetch_baza_files.clear()
+                                # BEZPIECZNY ZAPIS W CHMURZE (Nie przerywa działania jeśli SA ma 0GB przestrzeni)
+                                try:
+                                    meta_payload = {
+                                        "klient_imie": st.session_state.klient_imie, "firma_n": st.session_state.firma_n, "nip_n": st.session_state.nip_n,
+                                        "telefon_n": st.session_state.telefon_n, "email_n": st.session_state.email_n, "marka_oferty": marka_oferty,
+                                        "typ_klienta": typ_klienta, "l_osob_total": st.session_state.l_osob_total, "final_agenda_text": final_agenda_text,
+                                        "pozycje": edf.to_dict(orient="records")
+                                    }
+                                    json_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=4).encode('utf-8')
+                                    
+                                    upload_file_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID, 'application/pdf')
+                                    upload_file_to_drive(json_bytes, nazwa_pliku_json, BAZA_OFERT_FOLDER_ID, 'application/json')
+                                    st.info("✅ Kopia oraz parametry konfiguracyjne zostały zapisane w chmurze.")
+                                    fetch_baza_files.clear()
+                                except Exception as cloud_error:
+                                    st.warning(f"⚠️ Serwer Google zablokował utworzenie kopii zapasowej w chmurze (Błąd limitu miejsca: {cloud_error}). Twój plik PDF jest jednak gotowy do pobrania powyżej! Aby to naprawić, docelowo przenieś folder Baza Ofert na Dysk Współdzielony Google Workspace.")
+
                             except Exception as global_error:
                                 st.error(f"❌ Błąd generatora: {str(global_error)}")
                             finally:
