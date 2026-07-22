@@ -989,61 +989,96 @@ with tab1:
                 res += f"• {format_time(e['Start'])} - {format_time(e['End'])} : {e['Nazwa']}\n"
             return res
 
-        if st.session_state.agenda_custom_text:
-            draft_agenda = st.session_state.agenda_custom_text
+        # ZAWSZE generujemy świeży draft w tle
+        nowy_draft_agendy = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
+        if liczba_dni == 1:
+            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 10:00 - Przyjazd\n"
+            evs, unassigned = fill_slot(10.5, 18.0, unassigned)
+            nowy_draft_agendy += render_events(evs)
+            nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
+            evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
+            nowy_draft_agendy += render_events(evs_eve)
+            nowy_draft_agendy += "• 23:00 - Zakończenie pobytu\n"
         else:
-            draft_agenda = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
-            if liczba_dni == 1:
-                draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 10:00 - Przyjazd\n"
-                evs, unassigned = fill_slot(10.5, 18.0, unassigned)
-                draft_agenda += render_events(evs)
-                draft_agenda += "• 18:00 - 19:00 : Obiadokolacja\n"
+            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 15:00 - Przyjazd i Zakwaterowanie\n"
+            evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
+            nowy_draft_agendy += render_events(evs)
+            nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
+            evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned) 
+            nowy_draft_agendy += render_events(evs_eve)
+            nowy_draft_agendy += "\n"
+            
+            for d in range(2, liczba_dni):
+                nowy_draft_agendy += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n• 09:00 - 10:00 : Śniadanie\n"
+                evs, unassigned = fill_slot(10.0, 18.0, unassigned) 
+                nowy_draft_agendy += render_events(evs)
+                nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
                 evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
-                draft_agenda += render_events(evs_eve)
-                draft_agenda += "• 23:00 - Zakończenie pobytu\n"
-            else:
-                draft_agenda += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 15:00 - Przyjazd i Zakwaterowanie\n"
-                evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
-                draft_agenda += render_events(evs)
-                draft_agenda += "• 18:00 - 19:00 : Obiadokolacja\n"
-                evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned) 
-                draft_agenda += render_events(evs_eve)
-                draft_agenda += "\n"
+                nowy_draft_agendy += render_events(evs_eve)
+                nowy_draft_agendy += "\n"
                 
-                for d in range(2, liczba_dni):
-                    draft_agenda += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n• 09:00 - 10:00 : Śniadanie\n"
-                    evs, unassigned = fill_slot(10.0, 18.0, unassigned) 
-                    draft_agenda += render_events(evs)
-                    draft_agenda += "• 18:00 - 19:00 : Obiadokolacja\n"
-                    evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
-                    draft_agenda += render_events(evs_eve)
-                    draft_agenda += "\n"
-                    
-                draft_agenda += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n• 09:00 - 10:00 : Śniadanie\n"
-                evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
-                draft_agenda += render_events(evs)
-                draft_agenda += "• 13:00 - Wymeldowanie\n"
+            nowy_draft_agendy += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n• 09:00 - 10:00 : Śniadanie\n"
+            evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
+            nowy_draft_agendy += render_events(evs)
+            nowy_draft_agendy += "• 13:00 - Wymeldowanie\n"
 
-        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=draft_agenda, height=350)
+        # LOGIKA ODŚWIEŻANIA AGENDY (Wykrywanie zmian w datach i atrakcjach)
+        aktualne_parametry_agendy = f"{d_in}_{d_out}_{wybrane_atrakcje_agenda}"
+        
+        if "parametry_agendy_hash" not in st.session_state or st.session_state.parametry_agendy_hash != aktualne_parametry_agendy:
+            st.session_state.agenda_custom_text = nowy_draft_agendy
+            st.session_state.parametry_agendy_hash = aktualne_parametry_agendy
+
+        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=st.session_state.agenda_custom_text, height=350)
         st.session_state.agenda_custom_text = final_agenda_text
 
     with st.container():
         st.subheader("6. Kosztorys, Rezerwacja Hotres i Eksport PDF")
-        df = pd.DataFrame(pozycje_kosztowe)
         
-        if st.session_state.loaded_pozycje is not None:
-            df = pd.DataFrame(st.session_state.loaded_pozycje)
-            st.session_state.loaded_pozycje = None
+        # LOGIKA ODŚWIEŻANIA I PRZELICZANIA TABELI KOSZTOWEJ
+        ui_hash = hash(str(pozycje_kosztowe))
+        
+        if "ostatni_ui_hash" not in st.session_state:
+            st.session_state.ostatni_ui_hash = ui_hash
+            st.session_state.aktualna_tabela = pd.DataFrame(pozycje_kosztowe)
             
-        if not df.empty:
-            df = df[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
+        if st.session_state.loaded_pozycje is not None:
+            st.session_state.aktualna_tabela = pd.DataFrame(st.session_state.loaded_pozycje)
+            st.session_state.loaded_pozycje = None
+            st.session_state.ostatni_ui_hash = ui_hash
+            
+        elif ui_hash != st.session_state.ostatni_ui_hash:
+            # Użytkownik zmienił coś w panelach wyżej (np. dodał pokój) -> restartujemy tabelę
+            st.session_state.aktualna_tabela = pd.DataFrame(pozycje_kosztowe)
+            st.session_state.ostatni_ui_hash = ui_hash
+            
+        df_robocze = st.session_state.aktualna_tabela.copy()
+        
+        if not df_robocze.empty:
+            if "pdf_kw" not in df_robocze.columns:
+                df_robocze["pdf_kw"] = ""
+            df_robocze = df_robocze[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
+            
+            # Wymuszenie przeliczenia sumy (uwzględnia ręczne edycje z poprzedniego kroku ZANIM narysuje tabelę)
+            df_robocze["Ilość"] = pd.to_numeric(df_robocze["Ilość"], errors='coerce').fillna(0)
+            df_robocze["Cena jednostkowa"] = pd.to_numeric(df_robocze["Cena jednostkowa"], errors='coerce').fillna(0)
+            df_robocze["Suma"] = df_robocze["Ilość"] * df_robocze["Cena jednostkowa"]
+
             edf = st.data_editor(
-                df, 
+                df_robocze, 
                 use_container_width=True, 
                 num_rows="dynamic", 
-                column_config={"Suma": st.column_config.NumberColumn("Suma (Wyliczana)", disabled=True)}
+                column_config={
+                    "Suma": st.column_config.NumberColumn("Suma (Automatyczna)", disabled=True, format="%.2f PLN"),
+                    "Ilość": st.column_config.NumberColumn("Ilość", min_value=0.0),
+                    "Cena jednostkowa": st.column_config.NumberColumn("Cena jedn.", min_value=0.0, format="%.2f PLN")
+                }
             )
             
+            # Zapamiętanie ewentualnych ręcznych zmian w tabeli
+            st.session_state.aktualna_tabela = edf.copy()
+            
+            # Dodatkowe przeliczenie dla "Razem do zapłaty" pod tabelą i do eksportu PDF
             edf["Ilość"] = pd.to_numeric(edf["Ilość"], errors='coerce').fillna(0)
             edf["Cena jednostkowa"] = pd.to_numeric(edf["Cena jednostkowa"], errors='coerce').fillna(0)
             edf["Suma"] = edf["Ilość"] * edf["Cena jednostkowa"]
