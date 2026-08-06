@@ -1022,7 +1022,7 @@ with tab1:
             nowy_draft_agendy += render_events(evs)
             nowy_draft_agendy += "• 13:00 - Wymeldowanie\n"
 
-        # LOGIKA ODŚWIEŻANIA AGENDY (Wykrywanie zmian w datach i atrakcjach)
+        # LOGIKA ODŚWIEŻANIA AGENDY
         aktualne_parametry_agendy = f"{d_in}_{d_out}_{wybrane_atrakcje_agenda}"
         
         if "parametry_agendy_hash" not in st.session_state or st.session_state.parametry_agendy_hash != aktualne_parametry_agendy:
@@ -1035,7 +1035,7 @@ with tab1:
     with st.container():
         st.subheader("6. Kosztorys, Rezerwacja Hotres i Eksport PDF")
         
-        # LOGIKA ODŚWIEŻANIA I PRZELICZANIA TABELI KOSZTOWEJ
+        # LOGIKA ODŚWIEŻANIA TABELI KOSZTOWEJ
         ui_hash = hash(str(pozycje_kosztowe))
         
         if "ostatni_ui_hash" not in st.session_state:
@@ -1048,7 +1048,6 @@ with tab1:
             st.session_state.ostatni_ui_hash = ui_hash
             
         elif ui_hash != st.session_state.ostatni_ui_hash:
-            # Użytkownik zmienił coś w panelach wyżej (np. dodał pokój) -> restartujemy tabelę
             st.session_state.aktualna_tabela = pd.DataFrame(pozycje_kosztowe)
             st.session_state.ostatni_ui_hash = ui_hash
             
@@ -1058,33 +1057,41 @@ with tab1:
             if "pdf_kw" not in df_robocze.columns:
                 df_robocze["pdf_kw"] = ""
             df_robocze = df_robocze[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
-            
-            # Wymuszenie przeliczenia sumy (uwzględnia ręczne edycje z poprzedniego kroku ZANIM narysuje tabelę)
-            df_robocze["Ilość"] = pd.to_numeric(df_robocze["Ilość"], errors='coerce').fillna(0)
-            df_robocze["Cena jednostkowa"] = pd.to_numeric(df_robocze["Cena jednostkowa"], errors='coerce').fillna(0)
-            df_robocze["Suma"] = df_robocze["Ilość"] * df_robocze["Cena jednostkowa"]
+
+            st.info("💡 Zmieniłeś cenę lub ilość? Kliknij poniżej przycisk **Przelicz Tabelę**, aby zaktualizować sumy we wszystkich wierszach.")
 
             edf = st.data_editor(
                 df_robocze, 
                 use_container_width=True, 
                 num_rows="dynamic", 
                 column_config={
-                    "Suma": st.column_config.NumberColumn("Suma (Automatyczna)", disabled=True, format="%.2f PLN"),
+                    "Suma": st.column_config.NumberColumn("Suma (Wciśnij Przelicz)", disabled=True, format="%.2f PLN"),
                     "Ilość": st.column_config.NumberColumn("Ilość", min_value=0.0),
                     "Cena jednostkowa": st.column_config.NumberColumn("Cena jedn.", min_value=0.0, format="%.2f PLN")
                 }
             )
             
-            # Zapamiętanie ewentualnych ręcznych zmian w tabeli
+            # Zapamiętanie bieżących wpisów z klawiatury
             st.session_state.aktualna_tabela = edf.copy()
             
-            # Dodatkowe przeliczenie dla "Razem do zapłaty" pod tabelą i do eksportu PDF
-            edf["Ilość"] = pd.to_numeric(edf["Ilość"], errors='coerce').fillna(0)
-            edf["Cena jednostkowa"] = pd.to_numeric(edf["Cena jednostkowa"], errors='coerce').fillna(0)
-            edf["Suma"] = edf["Ilość"] * edf["Cena jednostkowa"]
+            # Główny przycisk przeliczania wywołujący odświeżenie samej sumy
+            if st.button("🧮 PRZELICZ TABELĘ Z KOSZTORYSEM", type="secondary", use_container_width=True):
+                edf["Ilość"] = pd.to_numeric(edf["Ilość"], errors='coerce').fillna(0)
+                edf["Cena jednostkowa"] = pd.to_numeric(edf["Cena jednostkowa"], errors='coerce').fillna(0)
+                edf["Suma"] = edf["Ilość"] * edf["Cena jednostkowa"]
+                st.session_state.aktualna_tabela = edf.copy()
+                st.rerun()
             
-            razem = edf["Suma"].sum()
-            st.markdown(f"<h3 style='color: {CI['dark_green']};'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
+            # Na potrzeby PDF i paska "RAZEM", w locie obliczamy wariant 100% poprawny,
+            # by nie puścić PDFa z błędem matematycznym, gdybyś zapomniał kliknąć Przelicz.
+            edf_pdf = edf.copy()
+            edf_pdf["Ilość"] = pd.to_numeric(edf_pdf["Ilość"], errors='coerce').fillna(0)
+            edf_pdf["Cena jednostkowa"] = pd.to_numeric(edf_pdf["Cena jednostkowa"], errors='coerce').fillna(0)
+            edf_pdf["Suma"] = edf_pdf["Ilość"] * edf_pdf["Cena jednostkowa"]
+            
+            razem = edf_pdf["Suma"].sum()
+            st.markdown(f"<h3 style='color: {CI['dark_green']}; text-align: center; margin-top: 15px;'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
             
             c_actions1, c_actions2 = st.columns(2)
             
@@ -1099,11 +1106,11 @@ with tab1:
                                 open_streams, missing_cards, added_file_ids = [], [], set()
                                 nazwa_docelowa = st.session_state.firma_n if st.session_state.firma_n else st.session_state.klient_imie
                                 
-                                has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf.iterrows())
-                                has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf.iterrows())
+                                has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf_pdf.iterrows())
+                                has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf_pdf.iterrows())
                                 
                                 zakwaterowanie_txt = "domkach i pokojach" if (has_dworek and has_krovacja) else "domkach" if has_krovacja else "pokojach"
-                                atr_list = [row["Opis"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
+                                atr_list = [row["Opis"] for _, row in edf_pdf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
                                 
                                 atrakcje_txt = f"{atr_list[0]} oraz {atr_list[1]}" if len(atr_list) >= 2 else f"{atr_list[0]} oraz naturę" if len(atr_list) == 1 else "spokój i bliskość natury"
                                 marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
@@ -1132,16 +1139,16 @@ with tab1:
                                     add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                                     add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
-                                if any(row["Kategoria"] == "Gastronomia" for _, row in edf.iterrows()): 
-                                    if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf.iterrows()):
+                                if any(row["Kategoria"] == "Gastronomia" for _, row in edf_pdf.iterrows()): 
+                                    if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf_pdf.iterrows()):
                                         add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
+                                    gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf_pdf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
                                     for g_kw in gastronomia_kws: 
                                         add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                                 add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
                                 
-                                for kw in list(set([row["pdf_kw"] for _, row in edf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
+                                for kw in list(set([row["pdf_kw"] for _, row in edf_pdf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
                                     add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
 
                                 buf = io.BytesIO()
@@ -1149,7 +1156,7 @@ with tab1:
                                 elements = []
                                 t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
                                 
-                                for _, row in edf.iterrows(): 
+                                for _, row in edf_pdf.iterrows(): 
                                     t_data.append([safe_str(row["Kategoria"]), safe_str(row["Opis"]), safe_str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
                                     
                                 t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
@@ -1224,7 +1231,7 @@ with tab1:
                                     "typ_klienta": typ_klienta, 
                                     "l_osob_total": st.session_state.l_osob_total, 
                                     "final_agenda_text": final_agenda_text,
-                                    "pozycje": edf.to_dict(orient="records")
+                                    "pozycje": edf_pdf.to_dict(orient="records")
                                 }
                                 
                                 if BAZA_OFERT_SHEET_ID != "TUTAJ_WKLEJ_ID_ARKUSZA":
