@@ -11,6 +11,7 @@ import glob
 import requests
 import json
 import shutil
+import uuid
 
 # Biblioteki Google
 from google.oauth2.service_account import Credentials as SACredentials
@@ -42,7 +43,6 @@ CI = {
 # --- IDENTYFIKATORY GOOGLE ---
 ROOT_FOLDER_ID = "1tU6mo1YWpTep8vl5CRR5DhsZAINeWnHz"  
 BAZA_OFERT_FOLDER_ID = "1i_a2UkK73ixyvMBe5l9SkE5vpqAu6he5" 
-# WKLEJ PONIŻEJ ID NOWEGO ARKUSZA GOOGLE DLA BAZY OFERT:
 BAZA_OFERT_SHEET_ID = "TUTAJ_WKLEJ_ID_ARKUSZA" 
 
 # =========================================================
@@ -80,7 +80,7 @@ HOTRES_ROOM_MAP = {
 
 HOTRES_ROOM_NAME_TO_ID = {v: k for k, v in HOTRES_ROOM_MAP.items()}
 
-# --- BEZPIECZNA INICJALIZACJA STANU APLIKACJI NA SAMYM POCZĄTKU ---
+# --- BEZPIECZNA INICJALIZACJA STANU APLIKACJI ---
 if "klient_imie" not in st.session_state:
     st.session_state.klient_imie = ""
 if "firma_n" not in st.session_state:
@@ -103,6 +103,8 @@ if "wybrane_p" not in st.session_state:
     st.session_state.wybrane_p = []
 if "wybrane_d" not in st.session_state:
     st.session_state.wybrane_d = []
+if "pdf_page_list" not in st.session_state:
+    st.session_state.pdf_page_list = []
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
 FONT_HEADER = 'Helvetica-Bold'
@@ -132,12 +134,14 @@ def register_custom_fonts():
             FONT_HEADER = 'Lora-Bold'
     except Exception:
         pass
+    
     try:
         if os.path.exists('PTSans-Regular.ttf'):
             pdfmetrics.registerFont(TTFont('PTSans-Regular', 'PTSans-Regular.ttf'))
             FONT_TEXT = 'PTSans-Regular'
     except Exception:
         pass
+        
     try:
         if os.path.exists('PTSans-Bold.ttf'):
             pdfmetrics.registerFont(TTFont('PTSans-Bold', 'PTSans-Bold.ttf'))
@@ -356,8 +360,6 @@ SYNONYMS = {
     "uklad_debogora": "AsystentAI_układ łóżek_Dębogóra", 
     "uklad_krovacja": "AsystentAI_układ łóżek_Krovacja",
     "Złodziej Krów": "złodziej", 
-    "Złodziej krów": "złodziej", 
-    "Łowcy krów": "złodziej", 
     "Skarby": "skarby", 
     "Safari_Standard": "safari dla grup_standard", 
     "Safari_Rozszerzona": "safari dla grup_rozszerzona", 
@@ -393,10 +395,13 @@ def get_file_by_keyword(keyword, all_files):
     if matches:
         matches.sort(key=lambda x: len(x['name']))
         prev_matches = [f for f in matches if 'prev' in f['name'].lower()]
-        return prev_matches[0] if prev_matches else matches[0]
+        if prev_matches:
+            return prev_matches[0]
+        else:
+            return matches[0]
     return None
 
-def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, added_file_ids, replacements=None):
+def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, added_file_ids, session_uid, replacements=None):
     if not keyword: 
         return
     file_obj = get_file_by_keyword(keyword, all_files)
@@ -407,22 +412,39 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
             fh = download_file(file_obj['id'])
             fname = file_obj['name'].lower()
             if 'ppt' in fname or 'presentation' in file_obj['mimeType']:
-                temp_ppt = f"temp_{file_obj['id']}.pptx"
-                temp_pdf = f"temp_{file_obj['id']}.pdf"
+                temp_ppt = f"temp_{session_uid}_{file_obj['id']}.pptx"
+                temp_pdf = f"temp_{session_uid}_{file_obj['id']}.pdf"
+                lo_profile_dir = f"./lo_profile_{session_uid}"
+                lo_profile_flag = f"-env:UserInstallation=file://{os.path.abspath(lo_profile_dir)}"
+                
                 with open(temp_ppt, "wb") as f: 
                     f.write(fh.getvalue())
+                
                 if replacements:
                     prs = Presentation(temp_ppt)
                     replace_text_in_pptx(prs, replacements)
                     prs.save(temp_ppt)
-                res = subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", temp_ppt], capture_output=True, text=True)
+                    
+                res = subprocess.run(["libreoffice", lo_profile_flag, "--headless", "--convert-to", "pdf", temp_ppt], capture_output=True, text=True)
                 if res.returncode != 0: 
                     raise Exception(f"LibreOffice błąd: {res.stderr}")
+                
                 with open(temp_pdf, "rb") as f: 
                     pdf_bytes = f.read()
                 pdf_stream = io.BytesIO(pdf_bytes)
+                
+                try: 
+                    os.remove(temp_ppt)
+                except: 
+                    pass
+                try: 
+                    os.remove(temp_pdf)
+                except: 
+                    pass
+                
             else:
                 pdf_stream = fh
+                
             open_streams.append(pdf_stream)
             merger.append(PdfReader(pdf_stream, strict=False))
             added_file_ids.add(file_obj['id'])
@@ -434,26 +456,37 @@ def add_file_to_merger(merger, keyword, all_files, open_streams, missing_cards, 
             missing_cards.append(keyword)
 
 def safe_str(text): 
-    return "" if pd.isna(text) else str(text).strip()
+    if pd.isna(text):
+        return ""
+    else:
+        return str(text).strip()
 
 def get_price_data(usluga_name, df):
     search_names = [usluga_name.lower()]
-    if "złodziej" in usluga_name.lower() or "łowcy" in usluga_name.lower():
+    if "złodziej" in usluga_name.lower() or "łowcy" in usluga_name.lower(): 
         search_names.extend(["złodziej krów", "łowcy krów"])
+        
     if df is None or df.empty: 
         return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
+        
     try:
         col_name = next((c for c in df.columns if 'nazwa' in c.lower() or 'usługa' in c.lower() or 'usluga' in c.lower()), None)
         col_price = next((c for c in df.columns if 'cena' in c.lower()), None)
         col_czas = next((c for c in df.columns if 'długość' in c.lower() or 'dlugosc' in c.lower()), None)
         col_kiedy = next((c for c in df.columns if 'kiedy' in c.lower() or 'zacząć' in c.lower() or 'zaczac' in c.lower()), None)
+        
         if col_name and col_price:
             match = df[df[col_name].astype(str).str.strip().str.lower().isin(search_names)]
-            if match.empty:
+            if match.empty: 
                 match = df[df[col_name].astype(str).str.lower().str.contains(usluga_name.lower()[:5], na=False)]
+                
             if not match.empty:
                 val = match.iloc[0][col_price]
-                cena = float(val) if pd.notna(val) else 0.0
+                if pd.notna(val):
+                    cena = float(val)
+                else:
+                    cena = 0.0
+                    
                 czas_num = 1.0
                 if col_czas and pd.notna(match.iloc[0][col_czas]):
                     czas_str = str(match.iloc[0][col_czas]).lower().replace('h', '').replace('godz.', '').replace('godz', '').strip()
@@ -469,44 +502,57 @@ def get_price_data(usluga_name, df):
                             else: 
                                 czas_num = float(czas_str.replace(',', '.'))
                         else:
-                            try: czas_num = float(czas_str)
-                            except: czas_num = 1.0
+                            try: 
+                                czas_num = float(czas_str)
+                            except: 
+                                czas_num = 1.0
+                                
                 min_start = 9.0
                 max_start = 18.0
                 if col_kiedy and pd.notna(match.iloc[0][col_kiedy]):
                     kiedy_str = str(match.iloc[0][col_kiedy]).strip()
                     m = re.findall(r'(\d{1,2}):\d{2}', kiedy_str)
-                    if len(m) >= 2:
+                    if len(m) >= 2: 
                         min_start = float(m[0])
                         max_start = float(m[1])
-                    elif len(m) == 1:
+                    elif len(m) == 1: 
                         min_start = float(m[0])
                         max_start = 22.0
+                        
                 return {"cena": cena, "czas": czas_num, "min_start": min_start, "max_start": max_start}
     except Exception: 
         pass
+        
     return {"cena": 0, "czas": 0.0, "min_start": 9.0, "max_start": 18.0}
 
 def sprawdz_dostepnosc_hotres(data_od, data_do):
     try:
         api_key = st.secrets["hotres"]["api"]
         auth_key = st.secrets["hotres"]["auth"]
-    except KeyError:
+    except KeyError: 
         return "Błąd kluczy API Hotres w pliku konfiguracyjnym secrets", {}
-    url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
+        
     try:
+        url = f"https://panel.hotres.pl/api_availability?auth={auth_key}&apikey={api_key}"
         response = requests.get(url, timeout=15)
+        
         if response.status_code == 200:
-            dane = response.json()
             szczegoly_zajetosci = {}
             liczba_nocy = max(1, (data_do - data_od).days)
-            wymagane_daty = [(data_od + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(liczba_nocy)]
-            for room_data in dane:
+            wymagane_daty = []
+            for i in range(liczba_nocy):
+                wymagane_daty.append((data_od + timedelta(days=i)).strftime("%Y-%m-%d"))
+                
+            for room_data in response.json():
                 room_id = room_data.get("type_id")
-                nazwa_pokoju = HOTRES_ROOM_MAP.get(int(room_id) if str(room_id).isdigit() else room_id, f"ID_{room_id}")
+                if str(room_id).isdigit():
+                    nazwa_pokoju = HOTRES_ROOM_MAP.get(int(room_id), f"ID_{room_id}")
+                else:
+                    nazwa_pokoju = HOTRES_ROOM_MAP.get(room_id, f"ID_{room_id}")
+                    
                 for day_data in room_data.get("dates", []):
                     data_dnia = day_data.get("date")
-                    dostepnosc = int(float(day_data.get("available", 0))) 
+                    dostepnosc = int(float(day_data.get("available", 0)))
                     if data_dnia in wymagane_daty and dostepnosc <= 0:
                         if nazwa_pokoju not in szczegoly_zajetosci: 
                             szczegoly_zajetosci[nazwa_pokoju] = []
@@ -514,111 +560,116 @@ def sprawdz_dostepnosc_hotres(data_od, data_do):
             return "", szczegoly_zajetosci
         else:
             return f"Hotres zwrócił kod błędu: {response.status_code}", {}
-    except Exception as e:
+    except Exception as e: 
         return f"Błąd połączenia z Hotres: {str(e)}", {}
 
 def utworz_rezerwacje_hotres(data_od, data_do, wybrane_pokoje_i_domki):
-    try:
+    try: 
         api_key = st.secrets["hotres"]["api"]
         auth_key = st.secrets["hotres"]["auth"]
-    except KeyError:
-        return "Błąd kluczy autoryzacji Hotres w pliku konfiguracyjnym secrets."
-        
-    url = f"https://panel.hotres.pl/api_reservation?auth={auth_key}&apikey={api_key}"
+    except KeyError: 
+        return "Błąd kluczy autoryzacji Hotres."
     
-    # Rozdzielamy imię i nazwisko (Hotres wymaga tego osobno)
     imiona = st.session_state.klient_imie.strip().split(" ", 1)
-    first_name = imiona[0]
-    last_name = imiona[1] if len(imiona) > 1 else "-"
-    
-    # --- DYNAMICZNY WYBÓR CENNIKA ZALEŻNIE OD TYPU KLIENTA ---
-    typ = st.session_state.get("typ_klienta_radio", "Indywidualny")
-    wybrany_rate_id = 31803 if typ == "Biznesowy" else 24548
-    
+    if len(imiona) > 1:
+        last_name = imiona[1]
+    else:
+        last_name = "-"
+        
     pokoje_payload = []
     for rname in wybrane_pokoje_i_domki:
         tid = HOTRES_ROOM_NAME_TO_ID.get(rname)
         if tid: 
             pokoje_payload.append({
-                "arrival_date": data_od.strftime("%Y-%m-%d"),
-                "departure_date": data_do.strftime("%Y-%m-%d"),
-                "type_id": tid,
+                "arrival_date": data_od.strftime("%Y-%m-%d"), 
+                "departure_date": data_do.strftime("%Y-%m-%d"), 
+                "type_id": tid, 
                 "price": 0, 
-                "amount": 0,
-                "adults": 1,
+                "amount": 0, 
+                "adults": 1, 
                 "child1": 0
             })
 
+    if st.session_state.get("typ_klienta_radio", "Indywidualny") == "Biznesowy":
+        rate_id = 31803
+    else:
+        rate_id = 24548
+
     payload = {
-        "status": "new",
-        "currency": "PLN",
-        "rate_id": wybrany_rate_id,
-        "lang": "pl",
-        "source": "reception",
-        "first_name": first_name,
+        "status": "new", 
+        "currency": "PLN", 
+        "rate_id": rate_id,
+        "lang": "pl", 
+        "source": "reception", 
+        "first_name": imiona[0], 
         "last_name": last_name,
-        "phone": st.session_state.telefon_n,
-        "phone_prefix": "48",
+        "phone": st.session_state.telefon_n, 
+        "phone_prefix": "48", 
         "email": st.session_state.email_n,
-        "company_name": st.session_state.firma_n,
-        "company_nip": st.session_state.nip_n,
+        "company_name": st.session_state.firma_n, 
+        "company_nip": st.session_state.nip_n, 
         "rooms": pokoje_payload
     }
     
     try:
+        url = f"https://panel.hotres.pl/api_reservation?auth={auth_key}&apikey={api_key}"
         res = requests.post(url, json=payload, timeout=15)
-        if res.status_code in [200, 201]:
-            dane_odp = res.json()
-            if dane_odp.get("result") == "success":
+        if res.status_code in [200, 201]: 
+            if res.json().get("result") == "success":
                 return "OK"
             else:
-                return f"Hotres odrzucił dane. Odpowiedź: {res.text}"
-        else: 
-            return f"Błąd protokołu HTTP: {res.status_code}. Odpowiedź systemu: {res.text}"
+                return f"Hotres odrzucił dane: {res.text}"
+        else:
+            return f"Błąd protokołu HTTP: {res.status_code}."
     except Exception as e: 
-        return f"Nie udało się wysłać żądania (Błąd sieciowy API Hotres): {str(e)}"
+        return f"Błąd sieciowy API Hotres: {str(e)}"
 
-# --- BEZPIECZNE POŁĄCZENIE Z DYSKIEM PRZY STARCIE ---
+# --- DYSK I PLIKI ---
 wszystkie_pliki = []
 cennik_file = None
 
 try:
     wszystkie_pliki = fetch_all_debogora_files(ROOT_FOLDER_ID)
     if wszystkie_pliki:
-        czcionki_do_pobrania = ['Lora-Regular.ttf', 'Lora-Bold.ttf', 'PTSans-Regular.ttf', 'PTSans-Bold.ttf']
         pobrano_nowe = False
+        czcionki = ['Lora-Regular.ttf', 'Lora-Bold.ttf', 'PTSans-Regular.ttf', 'PTSans-Bold.ttf']
         for f in wszystkie_pliki:
-            if f['name'] in czcionki_do_pobrania and not os.path.exists(f['name']):
+            if f['name'] in czcionki and not os.path.exists(f['name']):
                 try:
-                    fh = download_file(f['id'])
                     with open(f['name'], 'wb') as out: 
-                        out.write(fh.getvalue())
+                        out.write(download_file(f['id']).getvalue())
                     pobrano_nowe = True
-                except Exception:
+                except Exception: 
                     pass
+                    
         if pobrano_nowe: 
             register_custom_fonts()
         install_fonts_for_libreoffice()
-
-        cennik_files = [f for f in wszystkie_pliki if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower())]
-        cennik_files.sort(key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
-        if cennik_files: 
-            cennik_file = cennik_files[0]
-except Exception:
+        
+        c_files = []
+        for f in wszystkie_pliki:
+            if 'cennik' in f['name'].lower() and ('xlsx' in f['name'].lower() or 'csv' in f['name'].lower()):
+                c_files.append(f)
+                
+        if c_files: 
+            c_files_sorted = sorted(c_files, key=lambda f: 'xlsx' in f['name'].lower(), reverse=True)
+            cennik_file = c_files_sorted[0]
+except Exception: 
     pass
 
 if cennik_file and 'df_cennik' not in st.session_state:
     try:
-        file_stream = download_file(cennik_file['id'])
+        fs = download_file(cennik_file['id'])
         if 'xlsx' in cennik_file['name'].lower():
-            st.session_state.df_cennik = pd.read_excel(file_stream, engine='openpyxl')
+            st.session_state.df_cennik = pd.read_excel(fs, engine='openpyxl')
         else:
-            try: st.session_state.df_cennik = pd.read_csv(file_stream, encoding='utf-8')
-            except:
-                file_stream.seek(0)
-                st.session_state.df_cennik = pd.read_csv(file_stream, encoding='cp1250')
+            st.session_state.df_cennik = pd.read_csv(fs, encoding='utf-8')
     except Exception:
-        st.session_state.df_cennik = None
+        try: 
+            fs.seek(0)
+            st.session_state.df_cennik = pd.read_csv(fs, encoding='cp1250')
+        except: 
+            st.session_state.df_cennik = None
 elif 'df_cennik' not in st.session_state: 
     st.session_state.df_cennik = None
 
@@ -629,22 +680,26 @@ with st.sidebar:
     st.header("🗂️ Karty Produktów")
     with st.expander("Rozwiń pliki do pobrania"):
         if wszystkie_pliki:
-            pliki_do_pobrania = [f for f in wszystkie_pliki if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder' and '.ttf' not in f['name'].lower()]
+            pliki_do_pobrania = []
+            for f in wszystkie_pliki:
+                if 'cennik' not in f['name'].lower() and f['mimeType'] != 'application/vnd.google-apps.folder' and '.ttf' not in f['name'].lower():
+                    pliki_do_pobrania.append(f)
+                    
             for f in sorted(pliki_do_pobrania, key=lambda x: x['name']):
                 st.markdown(f"📄 [{f['name']}]({f.get('webViewLink', '#')})")
         else: 
             st.info("Brak plików na Dysku Google.")
 
 CENNIK = {
-    "nocleg_1_noc": get_price_data("Nocleg (1 noc)", df_c)["cena"],
-    "nocleg_2_noce": get_price_data("Nocleg (2+ noce)", df_c)["cena"],
+    "nocleg_1_noc": get_price_data("Nocleg (1 noc)", df_c)["cena"], 
+    "nocleg_2_noce": get_price_data("Nocleg (2+ noce)", df_c)["cena"], 
     "doplata_domek": 40,
     "domki": {
-        "Muuu 1": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 1": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "pdf": "krovacja"},
         "Muuu 2": {"baza": get_price_data("Muuu 1, 2", df_c)["cena"], "pdf": "krovacja"},
-        "Muuu 3": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 3": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "pdf": "krovacja"},
         "Muuu 4": {"baza": get_price_data("Muuu 3, 4", df_c)["cena"], "pdf": "krovacja"},
-        "Muuu 5": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "pdf": "krovacja"}, 
+        "Muuu 5": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "pdf": "krovacja"},
         "Muuu 6": {"baza": get_price_data("Muuu 5, 6", df_c)["cena"], "pdf": "krovacja"}
     },
     "wyzywienie": {
@@ -679,11 +734,23 @@ CENNIK = {
         "Wynajem sali": {"dane": get_price_data("Wynajem sali", df_c), "typ": "grupa", "pdf": "Wynajem sali"},
     }
 }
-POKOJE_DWOREK = {f"Pokój nr {i}": (1 if i==1 else 4 if i==11 else 3 if i in [7,9,10,12] else 2) for i in range(1,13)}
+
+POKOJE_DWOREK = {}
+for i in range(1, 13):
+    if i == 1:
+        pojemnosc = 1
+    elif i == 11:
+        pojemnosc = 4
+    elif i in [7, 9, 10, 12]:
+        pojemnosc = 3
+    else:
+        pojemnosc = 2
+    POKOJE_DWOREK[f"Pokój nr {i}"] = pojemnosc
 
 try:
-    logo_b64 = base64.b64encode(open("logo.png", "rb").read()).decode()
-    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{logo_b64}" width="120"></div>', unsafe_allow_html=True)
+    with open("logo.png", "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode()
+    st.markdown(f'<div style="display: flex; justify-content: center; margin-bottom: 10px;"><img src="data:image/png;base64,{encoded_string}" width="120"></div>', unsafe_allow_html=True)
 except Exception: 
     pass
 
@@ -691,43 +758,39 @@ st.markdown("<h1 style='text-align: center; margin-top:0;'>PLANER OFERT</h1>", u
 
 def auto_alloc():
     total = st.session_state.l_osob_total
-    typ = st.session_state.get("typ_klienta_radio", "Indywidualny")
-    marka = st.session_state.get("marka_oferty_select", "Dwór Dębogóra")
-    zajete_slownik = st.session_state.szczegoly_zajetosci
-    zajete = list(zajete_slownik.keys())
-    
+    zajete = list(st.session_state.szczegoly_zajetosci.keys())
     st.session_state.wybrane_p = []
     st.session_state.wybrane_d = []
             
-    if typ == "Biznesowy": 
+    if st.session_state.get("typ_klienta_radio", "Indywidualny") == "Biznesowy":
         max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
-    else: 
+    else:
         max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
         
-    def przydziel_dworek(osoby):
+    def p_dworek(osoby):
         for p, cap in POKOJE_DWOREK.items():
             if osoby > 0 and p not in zajete:
                 st.session_state.wybrane_p.append(p)
-                val = min(cap, osoby)
-                st.session_state[f"os_{p}"] = val
-                osoby -= val
+                przydzielono = min(cap, osoby)
+                st.session_state[f"os_{p}"] = przydzielono
+                osoby -= przydzielono
         return osoby
         
-    def przydziel_domki(osoby):
+    def p_domki(osoby):
         for d, cap in max_os_domki.items():
             if osoby > 0 and d not in zajete:
                 st.session_state.wybrane_d.append(d)
-                val = min(cap, osoby)
-                st.session_state[f"os_{d}"] = val
-                osoby -= val
+                przydzielono = min(cap, osoby)
+                st.session_state[f"os_{d}"] = przydzielono
+                osoby -= przydzielono
         return osoby
 
-    if marka == "Dwór Dębogóra":
-        total = przydziel_dworek(total)
-        total = przydziel_domki(total)
-    else:
-        total = przydziel_domki(total)
-        total = przydziel_dworek(total)
+    if st.session_state.get("marka_oferty_select", "Dwór Dębogóra") == "Dwór Dębogóra": 
+        pozostale = p_dworek(total)
+        p_domki(pozostale)
+    else: 
+        pozostale = p_domki(total)
+        p_dworek(pozostale)
 
 tab1, tab3, tab2 = st.tabs(["📝 Kreator Ofert", "📂 Baza Ofert", "⚙️ Edycja Cennika"])
 
@@ -746,47 +809,57 @@ with tab3:
         st.rerun()
         
     try:
-        if BAZA_OFERT_SHEET_ID == "TUTAJ_WKLEJ_ID_ARKUSZA":
-            st.info("⚠️ Baza nie jest w pełni skonfigurowana. Wklej ID Arkusza Google w zmiennej BAZA_OFERT_SHEET_ID w kodzie (linia 44).")
+        if BAZA_OFERT_SHEET_ID == "TUTAJ_WKLEJ_ID_ARKUSZA": 
+            st.info("⚠️ Skonfiguruj BAZA_OFERT_SHEET_ID")
         else:
             wiersze_ofert = get_offers_from_sheet(BAZA_OFERT_SHEET_ID)
             poprawne_oferty = []
             for row in wiersze_ofert:
-                row_padded = row + [''] * (11 - len(row))
-                if str(row_padded[0]).startswith("202"): 
-                    poprawne_oferty.append(row_padded)
+                dopelniony_wiersz = row + [''] * (11 - len(row))
+                if str(dopelniony_wiersz[0]).startswith("202"):
+                    poprawne_oferty.append(dopelniony_wiersz)
                     
-            if not poprawne_oferty:
+            if not poprawne_oferty: 
                 st.info("Brak zapisanych ofert w Arkuszu Google.")
             else:
                 for idx, row in enumerate(reversed(poprawne_oferty)): 
-                    data_utw, imie, firma, nip, tel, email, marka, typ, osoby, agenda, pozycje_json = row[:11]
-                    tytul = f"📄 {data_utw} - {firma if firma else imie} ({osoby} os.)"
-                    
                     c_file, c_act = st.columns([3, 2])
-                    with c_file: 
-                        st.markdown(f"**{tytul}**")
-                    with c_act:
-                        if st.button("📂 Przywróć do Kreatora", key=f"load_sheet_{idx}"):
-                            st.session_state.klient_imie = imie
-                            st.session_state.firma_n = firma
-                            st.session_state.nip_n = nip
-                            st.session_state.telefon_n = tel
-                            st.session_state.email_n = email
-                            st.session_state.marka_oferty_select = marka
-                            st.session_state.typ_klienta_radio = typ
-                            st.session_state.l_osob_total = int(osoby) if str(osoby).isdigit() else 10
-                            st.session_state.agenda_custom_text = agenda
+                    
+                    data = row[0]
+                    imie = row[1]
+                    firma = row[2]
+                    osoby = row[8]
+                    
+                    if firma:
+                        nazwa = firma
+                    else:
+                        nazwa = imie
+                        
+                    c_file.markdown(f"**📄 {data} - {nazwa} ({osoby} os.)**")
+                    if c_act.button("📂 Przywróć do Kreatora", key=f"load_sheet_{idx}"):
+                        st.session_state.klient_imie = row[1]
+                        st.session_state.firma_n = row[2]
+                        st.session_state.nip_n = row[3]
+                        st.session_state.telefon_n = row[4]
+                        st.session_state.email_n = row[5]
+                        st.session_state.marka_oferty_select = row[6]
+                        st.session_state.typ_klienta_radio = row[7]
+                        
+                        if str(row[8]).isdigit():
+                            st.session_state.l_osob_total = int(row[8])
+                        else:
+                            st.session_state.l_osob_total = 10
                             
-                            try: 
-                                st.session_state.loaded_pozycje = json.loads(pozycje_json)
-                            except Exception: 
-                                st.session_state.loaded_pozycje = []
-                                
-                            st.success(f"Załadowano ofertę kontrahenta. Przejdź do zakładki Kreator Ofert!")
-                            st.rerun()
-    except Exception as e:
-        st.error(f"Nie można załadować bazy z Arkusza: {e}")
+                        st.session_state.agenda_custom_text = row[9]
+                        
+                        try: 
+                            st.session_state.loaded_pozycje = json.loads(row[10])
+                        except: 
+                            st.session_state.loaded_pozycje = []
+                            
+                        st.rerun()
+    except Exception as e: 
+        st.error(f"Nie można załadować bazy: {e}")
 
 with tab1:
     pozycje_kosztowe = []
@@ -794,14 +867,12 @@ with tab1:
 
     with st.container():
         c_head1, c_head2 = st.columns([4, 1])
-        with c_head1: 
-            st.subheader("1. Główne Ustawienia i Dane Klienta")
-        with c_head2:
-            if st.button("🧹 Resetuj formularz"):
-                for key in list(st.session_state.keys()):
-                    if key not in ['df_cennik']: 
-                        del st.session_state[key]
-                st.rerun()
+        c_head1.subheader("1. Główne Ustawienia i Dane Klienta")
+        if c_head2.button("🧹 Resetuj formularz"):
+            for key in list(st.session_state.keys()):
+                if key not in ['df_cennik']: 
+                    del st.session_state[key]
+            st.rerun()
 
         c1, c2 = st.columns(2)
         with c1:
@@ -817,140 +888,138 @@ with tab1:
             st.session_state.email_n = st.text_input("Email", value=st.session_state.email_n)
             st.session_state.telefon_n = st.text_input("Telefon kontaktowy (do integracji Hotres)", value=st.session_state.telefon_n)
             cd1, cd2 = st.columns(2)
-            with cd1: 
-                d_in = st.date_input("Przyjazd", date.today())
-            with cd2: 
-                d_out = st.date_input("Wyjazd", date.today() + timedelta(1))
+            d_in = cd1.date_input("Przyjazd", date.today())
+            d_out = cd2.date_input("Wyjazd", date.today() + timedelta(1))
             dni = max(1, (d_out - d_in).days)
-            
             st.markdown("---")
             if st.button("🔍 Sprawdź dostępność na żywo (Hotres)"):
                 with st.spinner("Łączenie z bazą rezerwacji..."):
-                    err, zajete_szczegoly = sprawdz_dostepnosc_hotres(d_in, d_out)
+                    err, st.session_state.szczegoly_zajetosci = sprawdz_dostepnosc_hotres(d_in, d_out)
                     if err: 
                         st.error(err)
-                    else:
-                        st.session_state.szczegoly_zajetosci = zajete_szczegoly
-                        if zajete_szczegoly: 
-                            st.warning(f"🚨 W wybranym terminie wykryto zablokowane obiekty. Szczegóły poniżej.")
-                        else: 
-                            st.success("✅ Wszystkie zmapowane obiekty są wolne w tym terminie!")
+                    elif st.session_state.szczegoly_zajetosci: 
+                        st.warning(f"🚨 Wykryto zablokowane obiekty!")
+                    else: 
+                        st.success("✅ Wszystkie zmapowane obiekty są wolne!")
 
     with st.container():
         st.subheader("2. Zakwaterowanie")
-        stawka_dw = CENNIK["nocleg_1_noc"] if dni == 1 else CENNIK["nocleg_2_noce"]
+        if dni == 1:
+            stawka_dw = CENNIK["nocleg_1_noc"]
+        else:
+            stawka_dw = CENNIK["nocleg_2_noce"]
+            
         col_dw, col_dm = st.columns(2)
         osoby_zadeklarowane = 0
-        zajete_slownik = st.session_state.szczegoly_zajetosci
-        zajete_nazwy = list(zajete_slownik.keys())
+        zajete_nazwy = list(st.session_state.szczegoly_zajetosci.keys())
         
-        if typ_klienta == "Biznesowy": 
-            max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1}
-        else: 
+        if typ_klienta == "Biznesowy":
+            max_os_domki = {"Muuu 1": 2, "Muuu 2": 2, "Muuu 3": 4, "Muuu 4": 4, "Muuu 5": 1, "Muuu 6": 1} 
+        else:
             max_os_domki = {"Muuu 1": 4, "Muuu 2": 4, "Muuu 3": 6, "Muuu 4": 6, "Muuu 5": 3, "Muuu 6": 3}
             
         with col_dw:
-            dostepne_p = [p for p in POKOJE_DWOREK.keys() if p not in zajete_nazwy]
-            p_sel = st.multiselect("Dworek (Dostępne pokoje)", dostepne_p, key="wybrane_p")
-            
-            zajete_p_do_wyswietlenia = {p: zajete_slownik[p] for p in POKOJE_DWOREK.keys() if p in zajete_slownik}
-            if zajete_p_do_wyswietlenia:
-                for p, daty in zajete_p_do_wyswietlenia.items(): 
-                    st.markdown(f"<small style='color:gray;'>❌ {p} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
+            pokoje_dostepne = []
+            for p in POKOJE_DWOREK.keys():
+                if p not in zajete_nazwy:
+                    pokoje_dostepne.append(p)
                     
+            p_sel = st.multiselect("Dworek (Dostępne pokoje)", pokoje_dostepne, key="wybrane_p")
+            
             for p in p_sel:
                 ile = st.number_input(f"{p} (Max: {POKOJE_DWOREK[p]})", 1, POKOJE_DWOREK[p], key=f"os_{p}")
                 osoby_zadeklarowane += ile
                 pozycje_kosztowe.append({
-                    "Kategoria": "Nocleg", "Opis": f"{p}", "Ilość": ile, 
-                    "Cena jednostkowa": stawka_dw * dni, "Suma": ile * stawka_dw * dni, "pdf_kw": "dworek"
+                    "Kategoria": "Nocleg", 
+                    "Opis": f"{p}", 
+                    "Ilość": ile, 
+                    "Cena jednostkowa": stawka_dw * dni, 
+                    "Suma": ile * stawka_dw * dni
                 })
                 
         with col_dm:
-            dostepne_d = [d for d in CENNIK["domki"].keys() if d not in zajete_nazwy]
-            d_sel = st.multiselect("Domki Krovacja (Dostępne)", dostepne_d, key="wybrane_d")
-            
-            zajete_d_do_wyswietlenia = {d: zajete_slownik[d] for d in CENNIK["domki"].keys() if d in zajete_slownik}
-            if zajete_d_do_wyswietlenia:
-                for d, daty in zajete_d_do_wyswietlenia.items(): 
-                    st.markdown(f"<small style='color:gray;'>❌ {d} (Zajęte w: {format_zajete_daty(daty)})</small>", unsafe_allow_html=True)
+            domki_dostepne = []
+            for d in CENNIK["domki"].keys():
+                if d not in zajete_nazwy:
+                    domki_dostepne.append(d)
                     
+            d_sel = st.multiselect("Domki Krovacja (Dostępne)", domki_dostepne, key="wybrane_d")
+            
             for d in d_sel:
-                cap_domku = max_os_domki[d]
-                ile = st.number_input(f"{d} (Max w tej opcji: {cap_domku})", 1, cap_domku, key=f"os_{d}")
+                ile = st.number_input(f"{d} (Max: {max_os_domki[d]})", 1, max_os_domki[d], key=f"os_{d}")
                 osoby_zadeklarowane += ile
                 cena_d = (CENNIK["domki"][d]["baza"] + (max(0, ile - 1) * CENNIK["doplata_domek"])) * dni
                 pozycje_kosztowe.append({
-                    "Kategoria": "Nocleg", "Opis": f"{d}", "Ilość": 1, 
-                    "Cena jednostkowa": cena_d, "Suma": cena_d, "pdf_kw": "krovacja"
+                    "Kategoria": "Nocleg", 
+                    "Opis": f"{d}", 
+                    "Ilość": 1, 
+                    "Cena jednostkowa": cena_d, 
+                    "Suma": cena_d
                 })
 
-        overbooking_error = False
         if osoby_zadeklarowane > st.session_state.l_osob_total:
-            st.error(f"⚠️ Przydzieliłeś {osoby_zadeklarowane} miejsc dla {st.session_state.l_osob_total} gości.")
             overbooking_error = True
+            st.error(f"⚠️ Przydzieliłeś {osoby_zadeklarowane} miejsc dla {st.session_state.l_osob_total} gości.")
+        else:
+            overbooking_error = False
 
     with st.container():
         st.subheader("3. Wyżywienie")
         wyz_sel = st.multiselect("Wybierz opcje wyżywienia", list(CENNIK["wyzywienie"].keys()))
         for w in wyz_sel:
-            w_data = CENNIK["wyzywienie"][w]["dane"]
             ile = st.number_input(f"Ilość porcji: {w}", 1, 5000, st.session_state.l_osob_total * dni)
+            cena_w = CENNIK["wyzywienie"][w]["dane"]["cena"]
             pozycje_kosztowe.append({
-                "Kategoria": "Gastronomia", "Opis": w, "Ilość": ile, 
-                "Cena jednostkowa": w_data["cena"], "Suma": ile * w_data["cena"], "pdf_kw": CENNIK["wyzywienie"][w]["pdf"]
+                "Kategoria": "Gastronomia", 
+                "Opis": w, 
+                "Ilość": ile, 
+                "Cena jednostkowa": cena_w, 
+                "Suma": ile * cena_w
             })
 
     with st.container():
         st.subheader("4. Oferta Dodatkowa (SPAstwisko, Atrakcje, Biznes)")
         c_spa, c_atr, c_biz = st.columns(3)
         
-        with c_spa:
-            spa_sel = st.multiselect("SPAstwisko", list(CENNIK["SPAstwisko"].keys()))
-            for a in spa_sel:
-                a_data = CENNIK["SPAstwisko"][a]
-                ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"spa_{a}")
-                pozycje_kosztowe.append({
-                    "Kategoria": "SPAstwisko", "Opis": a, "Ilość": ile, 
-                    "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile * a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]
-                })
-                wybrane_atrakcje_agenda.append({
-                    "Nazwa": a, "Czas": a_data["dane"]["czas"], 
-                    "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]
-                })
+        def render_dodatki(kolumna, tytul, cennik_klucz, prefix):
+            opcje = list(CENNIK[cennik_klucz].keys())
+            sel = kolumna.multiselect(tytul, opcje)
+            for a in sel:
+                dane = CENNIK[cennik_klucz][a]
+                if dane["typ"] == "osoba":
+                    def_ilo = st.session_state.l_osob_total
+                else:
+                    def_ilo = 1
+                    
+                ile = kolumna.number_input(f"Ilość: {a}", 1, 100, def_ilo, key=f"{prefix}_{a}")
                 
-        with c_atr:
-            atr_sel = st.multiselect("Atrakcje", list(CENNIK["Atrakcje"].keys()))
-            for a in atr_sel:
-                a_data = CENNIK["Atrakcje"][a]
-                ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"atr_{a}")
+                cena = dane["dane"]["cena"]
                 pozycje_kosztowe.append({
-                    "Kategoria": "Atrakcje", "Opis": a, "Ilość": ile, 
-                    "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile * a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]
+                    "Kategoria": tytul, 
+                    "Opis": a, 
+                    "Ilość": ile, 
+                    "Cena jednostkowa": cena, 
+                    "Suma": ile * cena
                 })
                 wybrane_atrakcje_agenda.append({
-                    "Nazwa": a, "Czas": a_data["dane"]["czas"], 
-                    "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]
+                    "Nazwa": a, 
+                    "Czas": dane["dane"]["czas"], 
+                    "MinStart": dane["dane"]["min_start"], 
+                    "MaxStart": dane["dane"]["max_start"]
                 })
-                
-        with c_biz:
-            biz_sel = st.multiselect("Biznes", list(CENNIK["Biznes"].keys()))
-            for a in biz_sel:
-                a_data = CENNIK["Biznes"][a]
-                ile = st.number_input(f"Ilość: {a}", 1, 100, st.session_state.l_osob_total if a_data["typ"]=="osoba" else 1, key=f"biz_{a}")
-                pozycje_kosztowe.append({
-                    "Kategoria": "Biznes", "Opis": a, "Ilość": ile, 
-                    "Cena jednostkowa": a_data["dane"]["cena"], "Suma": ile * a_data["dane"]["cena"], "pdf_kw": a_data["pdf"]
-                })
-                wybrane_atrakcje_agenda.append({
-                    "Nazwa": a, "Czas": a_data["dane"]["czas"], 
-                    "MinStart": a_data["dane"]["min_start"], "MaxStart": a_data["dane"]["max_start"]
-                })
+            return sel
+            
+        spa_sel = render_dodatki(c_spa, "SPAstwisko", "SPAstwisko", "spa")
+        atr_sel = render_dodatki(c_atr, "Atrakcje", "Atrakcje", "atr")
+        biz_sel = render_dodatki(c_biz, "Biznes", "Biznes", "biz")
 
     with st.container():
         st.subheader("5. Generator Harmonogramu (Agenda)")
-        liczba_nocy = (d_out - d_in).days
-        liczba_dni = liczba_nocy + 1 if liczba_nocy > 0 else 1
+        roznica_dni = (d_out - d_in).days
+        if roznica_dni > 0:
+            liczba_dni = roznica_dni + 1
+        else:
+            liczba_dni = 1
         
         def format_time(hours_float):
             h = int(hours_float)
@@ -963,14 +1032,20 @@ with tab1:
         def fill_slot(slot_start_h, slot_end_h, pending_events):
             events = []
             curr_h = slot_start_h
-            
             while pending_events and curr_h < slot_end_h:
                 best_idx, best_start, best_end = -1, -1, -1
                 for i, atr in enumerate(pending_events):
                     prop_start = max(curr_h, atr['MinStart'])
-                    prop_end = prop_start + (atr['Czas'] if atr['Czas'] > 0 else 1.0)
+                    if atr['Czas'] > 0:
+                        czas = atr['Czas']
+                    else:
+                        czas = 1.0
+                    prop_end = prop_start + czas
+                    
                     if prop_start <= atr['MaxStart'] and prop_end <= slot_end_h:
-                        best_idx, best_start, best_end = i, prop_start, prop_end
+                        best_idx = i
+                        best_start = prop_start
+                        best_end = prop_end
                         break
                         
                 if best_idx != -1:
@@ -983,83 +1058,119 @@ with tab1:
                     break 
             return events, pending_events
             
-        def render_events(events):
-            res = ""
-            for e in events: 
-                res += f"• {format_time(e['Start'])} - {format_time(e['End'])} : {e['Nazwa']}\n"
-            return res
+        def render_events(events): 
+            txt = ""
+            for e in events:
+                txt += f"• {format_time(e['Start'])} - {format_time(e['End'])} : {e['Nazwa']}\n"
+            return txt
 
-        # ZAWSZE generujemy świeży draft w tle
         nowy_draft_agendy = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
         if liczba_dni == 1:
-            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 10:00 - Przyjazd\n"
             evs, unassigned = fill_slot(10.5, 18.0, unassigned)
-            nowy_draft_agendy += render_events(evs)
-            nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
             evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
-            nowy_draft_agendy += render_events(evs_eve)
-            nowy_draft_agendy += "• 23:00 - Zakończenie pobytu\n"
-        else:
-            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n• 15:00 - Przyjazd i Zakwaterowanie\n"
-            evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
+            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
+            nowy_draft_agendy += f"• 10:00 - Przyjazd\n"
             nowy_draft_agendy += render_events(evs)
-            nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
+            nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
+            nowy_draft_agendy += render_events(evs_eve)
+            nowy_draft_agendy += f"• 23:00 - Zakończenie pobytu\n"
+        else:
+            evs, unassigned = fill_slot(16.0, 18.0, unassigned) 
             evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned) 
+            nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
+            nowy_draft_agendy += f"• 15:00 - Przyjazd i Zakwaterowanie\n"
+            nowy_draft_agendy += render_events(evs)
+            nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
             nowy_draft_agendy += render_events(evs_eve)
             nowy_draft_agendy += "\n"
             
             for d in range(2, liczba_dni):
-                nowy_draft_agendy += f"DZIEŃ {d} ({ (d_in + timedelta(days=d-1)).strftime('%d.%m') })\n• 09:00 - 10:00 : Śniadanie\n"
                 evs, unassigned = fill_slot(10.0, 18.0, unassigned) 
-                nowy_draft_agendy += render_events(evs)
-                nowy_draft_agendy += "• 18:00 - 19:00 : Obiadokolacja\n"
                 evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
+                data_dnia = (d_in + timedelta(days=d-1)).strftime('%d.%m')
+                nowy_draft_agendy += f"DZIEŃ {d} ({data_dnia})\n"
+                nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
+                nowy_draft_agendy += render_events(evs)
+                nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
                 nowy_draft_agendy += render_events(evs_eve)
                 nowy_draft_agendy += "\n"
                 
-            nowy_draft_agendy += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n• 09:00 - 10:00 : Śniadanie\n"
             evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
+            nowy_draft_agendy += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
+            nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
             nowy_draft_agendy += render_events(evs)
-            nowy_draft_agendy += "• 13:00 - Wymeldowanie\n"
+            nowy_draft_agendy += f"• 13:00 - Wymeldowanie\n"
 
-        # LOGIKA ODŚWIEŻANIA AGENDY
         aktualne_parametry_agendy = f"{d_in}_{d_out}_{wybrane_atrakcje_agenda}"
-        
-        if "parametry_agendy_hash" not in st.session_state or st.session_state.parametry_agendy_hash != aktualne_parametry_agendy:
+        if st.session_state.get("parametry_agendy_hash") != aktualne_parametry_agendy:
             st.session_state.agenda_custom_text = nowy_draft_agendy
             st.session_state.parametry_agendy_hash = aktualne_parametry_agendy
 
-        final_agenda_text = st.text_area("Szkic Harmonogramu (do edycji):", value=st.session_state.agenda_custom_text, height=350)
-        st.session_state.agenda_custom_text = final_agenda_text
+        st.session_state.agenda_custom_text = st.text_area("Szkic Harmonogramu (do edycji):", value=st.session_state.agenda_custom_text, height=350)
+
+    # --- ZARZĄDZANIE STRONAMI PDF ---
+    def generate_default_pdf_tags():
+        tags = ["okładka", "powitalna"]
+        has_dworek = False
+        if st.session_state.wybrane_p:
+            has_dworek = True
+            
+        has_krovacja = False
+        if st.session_state.wybrane_d:
+            has_krovacja = True
+        
+        if has_dworek and has_krovacja: 
+            tags.extend(["zakwaterowanie_oba", "uklad_debogora", "uklad_krovacja"])
+        elif marka_oferty == "Krovacja" or has_krovacja: 
+            tags.extend(["zakwaterowanie_domki", "uklad_krovacja"])
+        else: 
+            tags.extend(["zakwaterowanie_dwor", "uklad_debogora"])
+
+        for w in wyz_sel: 
+            tags.append(CENNIK["wyzywienie"][w]["pdf"])
+            
+        tags.append("atrakcje_wstęp")
+        
+        for a in spa_sel: 
+            tags.append(CENNIK["SPAstwisko"][a]["pdf"])
+        for a in atr_sel: 
+            tags.append(CENNIK["Atrakcje"][a]["pdf"])
+        for a in biz_sel: 
+            tags.append(CENNIK["Biznes"][a]["pdf"])
+        
+        tags.extend(["wycena", "agenda", "kontakt"])
+        
+        seen = set()
+        final_tags = []
+        for x in tags:
+            if x not in seen:
+                seen.add(x)
+                final_tags.append(x)
+        return final_tags
+
+    aktualne_parametry_ofert = f"{marka_oferty}_{st.session_state.wybrane_p}_{st.session_state.wybrane_d}_{wyz_sel}_{spa_sel}_{atr_sel}_{biz_sel}"
+    if st.session_state.get("parametry_ofert_hash") != aktualne_parametry_ofert:
+        st.session_state.pdf_page_list = generate_default_pdf_tags()
+        st.session_state.parametry_ofert_hash = aktualne_parametry_ofert
 
     with st.container():
         st.subheader("6. Kosztorys, Rezerwacja Hotres i Eksport PDF")
         
-        # LOGIKA ODŚWIEŻANIA TABELI KOSZTOWEJ
+        # --- TABELA KOSZTOWA ---
         ui_hash = hash(str(pozycje_kosztowe))
-        
-        if "ostatni_ui_hash" not in st.session_state:
-            st.session_state.ostatni_ui_hash = ui_hash
-            st.session_state.aktualna_tabela = pd.DataFrame(pozycje_kosztowe)
-            
         if st.session_state.loaded_pozycje is not None:
             st.session_state.aktualna_tabela = pd.DataFrame(st.session_state.loaded_pozycje)
             st.session_state.loaded_pozycje = None
             st.session_state.ostatni_ui_hash = ui_hash
-            
-        elif ui_hash != st.session_state.ostatni_ui_hash:
+        elif "ostatni_ui_hash" not in st.session_state or ui_hash != st.session_state.ostatni_ui_hash:
             st.session_state.aktualna_tabela = pd.DataFrame(pozycje_kosztowe)
             st.session_state.ostatni_ui_hash = ui_hash
             
         df_robocze = st.session_state.aktualna_tabela.copy()
-        
         if not df_robocze.empty:
-            if "pdf_kw" not in df_robocze.columns:
-                df_robocze["pdf_kw"] = ""
-            df_robocze = df_robocze[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma", "pdf_kw"]]
-
-            st.info("💡 Zmieniłeś cenę lub ilość? Kliknij poniżej przycisk **Przelicz Tabelę**, aby zaktualizować sumy we wszystkich wierszach.")
-
+            df_robocze = df_robocze[["Kategoria", "Opis", "Ilość", "Cena jednostkowa", "Suma"]]
+            st.info("💡 Zmieniłeś cenę lub ilość? Kliknij **Przelicz Tabelę**, aby zaktualizować sumy we wszystkich wierszach.")
+            
             edf = st.data_editor(
                 df_robocze, 
                 use_container_width=True, 
@@ -1070,11 +1181,8 @@ with tab1:
                     "Cena jednostkowa": st.column_config.NumberColumn("Cena jedn.", min_value=0.0, format="%.2f PLN")
                 }
             )
-            
-            # Zapamiętanie bieżących wpisów z klawiatury
             st.session_state.aktualna_tabela = edf.copy()
             
-            # Główny przycisk przeliczania wywołujący odświeżenie samej sumy
             if st.button("🧮 PRZELICZ TABELĘ Z KOSZTORYSEM", type="secondary", use_container_width=True):
                 edf["Ilość"] = pd.to_numeric(edf["Ilość"], errors='coerce').fillna(0)
                 edf["Cena jednostkowa"] = pd.to_numeric(edf["Cena jednostkowa"], errors='coerce').fillna(0)
@@ -1082,135 +1190,169 @@ with tab1:
                 st.session_state.aktualna_tabela = edf.copy()
                 st.rerun()
             
-            # Na potrzeby PDF i paska "RAZEM", w locie obliczamy wariant 100% poprawny,
-            # by nie puścić PDFa z błędem matematycznym, gdybyś zapomniał kliknąć Przelicz.
             edf_pdf = edf.copy()
             edf_pdf["Ilość"] = pd.to_numeric(edf_pdf["Ilość"], errors='coerce').fillna(0)
             edf_pdf["Cena jednostkowa"] = pd.to_numeric(edf_pdf["Cena jednostkowa"], errors='coerce').fillna(0)
             edf_pdf["Suma"] = edf_pdf["Ilość"] * edf_pdf["Cena jednostkowa"]
-            
             razem = edf_pdf["Suma"].sum()
-            st.markdown(f"<h3 style='color: {CI['dark_green']}; text-align: center; margin-top: 15px;'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>".replace(",", " "), unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
             
+            st.markdown(f"<h3 style='color: {CI['dark_green']}; text-align: center; margin-top: 15px;'>RAZEM DO ZAPŁATY: {razem:,.2f} PLN</h3>", unsafe_allow_html=True)
+            st.markdown("---")
+
+            # --- MENEDŻER STRON PDF ---
+            st.markdown("#### Menedżer Stron PDF")
+            st.info("Oto karty, które zostaną skompilowane do finalnego pliku PDF. Kolejność na liście to kolejność stron w dokumencie. **Możesz dodawać własne strony, usuwać je lub zamieniać kolejność (edytując numery).**")
+            
+            lista_stron_do_tabeli = []
+            for i, strona in enumerate(st.session_state.pdf_page_list):
+                lista_stron_do_tabeli.append({"Kolejność": i + 1, "Strona z Dysku": strona})
+                
+            df_pages = pd.DataFrame(lista_stron_do_tabeli)
+            
+            edited_pages = st.data_editor(
+                df_pages, 
+                num_rows="dynamic", 
+                use_container_width=True,
+                column_config={
+                    "Kolejność": st.column_config.NumberColumn("Numer Strony", min_value=1, step=1),
+                    "Strona z Dysku": st.column_config.SelectboxColumn("Wybierz kartę", options=list(SYNONYMS.keys()), required=True)
+                }
+            )
+            
+            zatwierdzone_strony_pdf = edited_pages.sort_values("Kolejność")["Strona z Dysku"].dropna().tolist()
+
             c_actions1, c_actions2 = st.columns(2)
-            
             with c_actions1:
                 if st.button("GENERUJ FINALNY PDF Oferty", disabled=overbooking_error, type="primary"):
                     if not st.session_state.klient_imie: 
                         st.error("Podaj imię i nazwisko klienta!")
                     else:
-                        with st.spinner("Kompilowanie oferty i zapisywanie archiwum..."):
+                        with st.spinner("Kompilowanie oferty (izolacja sesji aktywowana)..."):
+                            session_uid = uuid.uuid4().hex
                             try:
                                 merger = PdfWriter()
-                                open_streams, missing_cards, added_file_ids = [], [], set()
-                                nazwa_docelowa = st.session_state.firma_n if st.session_state.firma_n else st.session_state.klient_imie
+                                open_streams = []
+                                missing_cards = []
+                                added_file_ids = set()
                                 
-                                has_dworek = any(row["pdf_kw"] == "dworek" for _, row in edf_pdf.iterrows())
-                                has_krovacja = any(row["pdf_kw"] == "krovacja" for _, row in edf_pdf.iterrows())
+                                has_dworek = False
+                                if st.session_state.wybrane_p:
+                                    has_dworek = True
+                                    
+                                has_krovacja = False
+                                if st.session_state.wybrane_d:
+                                    has_krovacja = True
+                                    
+                                if has_dworek and has_krovacja:
+                                    zakwaterowanie_txt = "domkach i pokojach"
+                                elif marka_oferty == "Krovacja":
+                                    zakwaterowanie_txt = "domkach"
+                                else:
+                                    zakwaterowanie_txt = "pokojach"
+                                    
+                                atr_list = []
+                                for _, row in edf_pdf.iterrows():
+                                    if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]:
+                                        atr_list.append(row["Opis"])
+                                        
+                                if len(atr_list) >= 2:
+                                    atrakcje_txt = f"{atr_list[0]} oraz {atr_list[1]}"
+                                elif len(atr_list) == 1:
+                                    atrakcje_txt = f"{atr_list[0]} oraz naturę"
+                                else:
+                                    atrakcje_txt = "spokój i bliskość natury"
                                 
-                                zakwaterowanie_txt = "domkach i pokojach" if (has_dworek and has_krovacja) else "domkach" if has_krovacja else "pokojach"
-                                atr_list = [row["Opis"] for _, row in edf_pdf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"]]
-                                
-                                atrakcje_txt = f"{atr_list[0]} oraz {atr_list[1]}" if len(atr_list) >= 2 else f"{atr_list[0]} oraz naturę" if len(atr_list) == 1 else "spokój i bliskość natury"
-                                marka_wstawka = "Krovację" if marka_oferty == "Krovacja" else "Dwór Dębogóra"
-                                
+                                if st.session_state.firma_n:
+                                    docelowa_nazwa = st.session_state.firma_n
+                                else:
+                                    docelowa_nazwa = st.session_state.klient_imie
+                                    
+                                if marka_oferty == "Krovacja":
+                                    nazwa_obiektu = "Krovację"
+                                else:
+                                    nazwa_obiektu = "Dwór Dębogóra"
+                                    
                                 replacements = {
-                                    "{{nazwa firmy}}": nazwa_docelowa, 
-                                    "{{Dwór Dębogóra/Krovację}}": marka_wstawka, 
+                                    "{{nazwa firmy}}": docelowa_nazwa, 
+                                    "{{Dwór Dębogóra/Krovację}}": nazwa_obiektu, 
                                     "{{domkach/pokojach}}": zakwaterowanie_txt,
                                     "{{atrakcja}} oraz {{atrakcja}}": atrakcje_txt, 
-                                    "{{przykład agendy}}": final_agenda_text, 
+                                    "{{przykład agendy}}": st.session_state.agenda_custom_text, 
                                     "{{tabela z wyceną dla b2b }}": "", 
                                     "{{ tabela z wyceną dla b2b }}": ""
                                 }
                                 
-                                add_file_to_merger(merger, "okładka", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "powitalna", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                
-                                if has_dworek and has_krovacja: 
-                                    add_file_to_merger(merger, "zakwaterowanie_oba", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                elif has_dworek: 
-                                    add_file_to_merger(merger, "zakwaterowanie_dwor", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    add_file_to_merger(merger, "uklad_debogora", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                elif has_krovacja: 
-                                    add_file_to_merger(merger, "zakwaterowanie_domki", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    add_file_to_merger(merger, "uklad_krovacja", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                                if any(row["Kategoria"] == "Gastronomia" for _, row in edf_pdf.iterrows()): 
-                                    if any(row["Opis"] in ["Śniadanie", "Obiadokolacja"] for _, row in edf_pdf.iterrows()):
-                                        add_file_to_merger(merger, "wyżywienie", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                    gastronomia_kws = list(set([row["pdf_kw"] for _, row in edf_pdf.iterrows() if row["Kategoria"] == "Gastronomia" and pd.notna(row["pdf_kw"]) and row["pdf_kw"] != "wyżywienie"]))
-                                    for g_kw in gastronomia_kws: 
-                                        add_file_to_merger(merger, g_kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                                add_file_to_merger(merger, "atrakcje_wstęp", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                
-                                for kw in list(set([row["pdf_kw"] for _, row in edf_pdf.iterrows() if row["Kategoria"] in ["SPAstwisko", "Atrakcje", "Biznes"] and pd.notna(row["pdf_kw"])])):
-                                    add_file_to_merger(merger, kw, wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-
-                                buf = io.BytesIO()
-                                doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
-                                elements = []
-                                t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
-                                
-                                for _, row in edf_pdf.iterrows(): 
-                                    t_data.append([safe_str(row["Kategoria"]), safe_str(row["Opis"]), safe_str(row["Ilość"]), f"{row['Suma']:,.0f} zł".replace(",", " ")])
-                                    
-                                t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
-                                table = Table(t_data, colWidths=[110, 220, 50, 90])
-                                table.setStyle(TableStyle([
-                                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])), 
-                                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                                    ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER), 
-                                    ('FONTSIZE', (0, 0), (-1, 0), 12),
-                                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'), 
-                                    ('ALIGN', (1, 1), (1, -2), 'LEFT'),
-                                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), 
-                                    ('BOTTOMPADDING', (0, 0), (-1, -1), 10), 
-                                    ('TOPPADDING', (0, 0), (-1, -1), 10),
-                                    ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT), 
-                                    ('FONTNAME', (2, -1), (-1, -1), FONT_TEXT_BOLD),
-                                    ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])), 
-                                    ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
-                                    ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
-                                ]))
-                                elements.append(table)
-                                doc.build(elements)
-                                buf.seek(0)
-                                
-                                wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
-                                if wycena_file:
-                                    try:
-                                        fh = download_file(wycena_file['id'])
-                                        with open("temp_wycena.pptx", "wb") as f: 
-                                            f.write(fh.getvalue())
-                                            
-                                        prs = Presentation("temp_wycena.pptx")
-                                        replace_text_in_pptx(prs, replacements)
-                                        prs.save("temp_wycena.pptx")
+                                for tag_strony in zatwierdzone_strony_pdf:
+                                    if tag_strony == "wycena":
+                                        buf = io.BytesIO()
+                                        doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=120, bottomMargin=50)
+                                        t_data = [["Kategoria", "Opis usługi", "Ilość", "Suma"]]
                                         
-                                        subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "temp_wycena.pptx"], check=True)
-                                        with open("temp_wycena.pdf", "rb") as f: 
-                                            bg_bytes = f.read()
+                                        for _, row in edf_pdf.iterrows(): 
+                                            t_data.append([
+                                                safe_str(row["Kategoria"]), 
+                                                safe_str(row["Opis"]), 
+                                                safe_str(row["Ilość"]), 
+                                                f"{row['Suma']:,.0f} zł".replace(",", " ")
+                                            ])
                                             
-                                        fg_reader = PdfReader(buf)
-                                        for i, fg_page in enumerate(fg_reader.pages):
-                                            bg_stream_fresh = io.BytesIO(bg_bytes)
-                                            open_streams.append(bg_stream_fresh)
-                                            bg_reader = PdfReader(bg_stream_fresh)
-                                            bg_page = bg_reader.pages[min(i, len(bg_reader.pages) - 1)]
-                                            bg_page.merge_page(fg_page)
-                                            merger.add_page(bg_page)
-                                    except Exception: 
-                                        merger.append(PdfReader(buf, strict=False))
-                                else: 
-                                    merger.append(PdfReader(buf, strict=False))
-
-                                add_file_to_merger(merger, "agenda", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
-                                add_file_to_merger(merger, "kontakt", wszystkie_pliki, open_streams, missing_cards, added_file_ids, replacements)
+                                        t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
+                                        
+                                        table = Table(t_data, colWidths=[110, 220, 50, 90])
+                                        table.setStyle(TableStyle([
+                                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])), 
+                                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                                            ('FONTNAME', (0, 0), (-1, 0), FONT_HEADER), 
+                                            ('FONTSIZE', (0, 0), (-1, 0), 12), 
+                                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'), 
+                                            ('ALIGN', (1, 1), (1, -2), 'LEFT'), 
+                                            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), 
+                                            ('BOTTOMPADDING', (0, 0), (-1, -1), 10), 
+                                            ('TOPPADDING', (0, 0), (-1, -1), 10), 
+                                            ('FONTNAME', (0, 1), (-1, -1), FONT_TEXT), 
+                                            ('FONTNAME', (2, -1), (-1, -1), FONT_TEXT_BOLD),
+                                            ('TEXTCOLOR', (2, -1), (-1, -1), colors.HexColor(CI['dark_green'])), 
+                                            ('BACKGROUND', (2, -1), (-1, -1), colors.HexColor(CI['light_green'])),
+                                            ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(CI['dark_green'])),
+                                        ]))
+                                        doc.build([table])
+                                        buf.seek(0)
+                                        
+                                        wycena_file = get_file_by_keyword("wycena", wszystkie_pliki)
+                                        if wycena_file:
+                                            try:
+                                                temp_ppt_w = f"temp_wycena_{session_uid}.pptx"
+                                                with open(temp_ppt_w, "wb") as f: 
+                                                    f.write(download_file(wycena_file['id']).getvalue())
+                                                    
+                                                prs = Presentation(temp_ppt_w)
+                                                replace_text_in_pptx(prs, replacements)
+                                                prs.save(temp_ppt_w)
+                                                
+                                                lo_profile_dir = f"./lo_profile_{session_uid}"
+                                                lo_profile_flag = f"-env:UserInstallation=file://{os.path.abspath(lo_profile_dir)}"
+                                                
+                                                subprocess.run(["libreoffice", lo_profile_flag, "--headless", "--convert-to", "pdf", temp_ppt_w], check=True)
+                                                
+                                                temp_pdf_w = f"temp_wycena_{session_uid}.pdf"
+                                                with open(temp_pdf_w, "rb") as f: 
+                                                    bg_bytes = f.read()
+                                                
+                                                fg_reader = PdfReader(buf)
+                                                bg_reader = PdfReader(io.BytesIO(bg_bytes))
+                                                for i, fg_page in enumerate(fg_reader.pages):
+                                                    if i < len(bg_reader.pages):
+                                                        bg_page = bg_reader.pages[i]
+                                                    else:
+                                                        bg_page = bg_reader.pages[-1]
+                                                    bg_page.merge_page(fg_page)
+                                                    merger.add_page(bg_page)
+                                            except Exception: 
+                                                merger.append(PdfReader(buf, strict=False))
+                                        else: 
+                                            merger.append(PdfReader(buf, strict=False))
+                                    else:
+                                        add_file_to_merger(merger, tag_strony, wszystkie_pliki, open_streams, missing_cards, added_file_ids, session_uid, replacements)
 
                                 final_pdf = io.BytesIO()
                                 merger.write(final_pdf)
@@ -1221,49 +1363,61 @@ with tab1:
                                 st.success("✅ Oferta w formacie PDF została pomyślnie wygenerowana!")
                                 st.download_button("📥 POBIERZ PDF NA DYSK LOKALNY", pdf_bytes_to_upload, nazwa_pliku_pdf, "application/pdf", type="primary")
 
+                                pozycje_do_arkusza = []
+                                for index, wiersz in edf_pdf.iterrows():
+                                    pozycje_do_arkusza.append({
+                                        "Kategoria": wiersz["Kategoria"],
+                                        "Opis": wiersz["Opis"],
+                                        "Ilość": wiersz["Ilość"],
+                                        "Cena jednostkowa": wiersz["Cena jednostkowa"],
+                                        "Suma": wiersz["Suma"]
+                                    })
+
                                 meta_payload = {
                                     "klient_imie": st.session_state.klient_imie, 
                                     "firma_n": st.session_state.firma_n, 
-                                    "nip_n": st.session_state.nip_n,
+                                    "nip_n": st.session_state.nip_n, 
                                     "telefon_n": st.session_state.telefon_n, 
                                     "email_n": st.session_state.email_n, 
                                     "marka_oferty": marka_oferty,
                                     "typ_klienta": typ_klienta, 
                                     "l_osob_total": st.session_state.l_osob_total, 
-                                    "final_agenda_text": final_agenda_text,
-                                    "pozycje": edf_pdf.to_dict(orient="records")
+                                    "final_agenda_text": st.session_state.agenda_custom_text, 
+                                    "pozycje": pozycje_do_arkusza
                                 }
                                 
-                                if BAZA_OFERT_SHEET_ID != "TUTAJ_WKLEJ_ID_ARKUSZA":
+                                if BAZA_OFERT_SHEET_ID != "TUTAJ_WKLEJ_ID_ARKUSZA": 
                                     save_offer_to_sheet(BAZA_OFERT_SHEET_ID, meta_payload)
-                                    st.info("✅ Historia oferty została pomyślnie zarchiwizowana w Arkuszu Google.")
-                                else:
-                                    st.warning("⚠️ Brak podanego ID Arkusza Google - pominięto archiwizację parametrów.")
-                                
+                                    
                                 upload_file_to_drive(pdf_bytes_to_upload, nazwa_pliku_pdf, BAZA_OFERT_FOLDER_ID, 'application/pdf')
                                     
-                            except Exception as global_error: 
-                                st.error(f"❌ Błąd generatora: {str(global_error)}")
+                            except Exception as e: 
+                                st.error(f"❌ Błąd generatora: {str(e)}")
                             finally:
-                                for f in glob.glob("temp_*"):
+                                pliki_do_usuniecia = glob.glob(f"*{session_uid}*")
+                                for f in pliki_do_usuniecia:
                                     try: 
-                                        os.remove(f)
+                                        if os.path.isdir(f): 
+                                            shutil.rmtree(f)
+                                        else: 
+                                            os.remove(f)
                                     except: 
                                         pass
             
             with c_actions2:
-                st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("⚡ PRZEŚLIJ REZERWACJĘ DO HOTRES", type="secondary", use_container_width=True):
-                    wybrane_obiekty = list(st.session_state.get("wybrane_p", [])) + list(st.session_state.get("wybrane_d", []))
+                    wybrane_obiekty = []
+                    wybrane_obiekty.extend(st.session_state.wybrane_p)
+                    wybrane_obiekty.extend(st.session_state.wybrane_d)
                     
                     if not wybrane_obiekty: 
-                        st.error("Wybierz przynajmniej jeden pokój lub domek przed wysłaniem rezerwacji!")
+                        st.error("Wybierz pokoje/domki!")
                     elif not st.session_state.klient_imie or not st.session_state.email_n: 
-                        st.error("Imię i nazwisko oraz Email są wymagane do utworzenia rezerwacji!")
+                        st.error("Wymagane imię, nazwisko oraz email!")
                     else:
-                        with st.spinner("Wysyłanie danych kontrahenta i blokady pokoi do systemu Hotres..."):
-                            status_res = utworz_rezerwacje_hotres(d_in, d_out, wybrane_obiekty)
-                            if status_res == "OK": 
-                                st.success("🎉 Sukces! Pokoje oraz dane osobowe (w tym NIP i Telefon) zostały wprowadzone do Hotres.")
+                        with st.spinner("Wysyłanie do Hotres..."):
+                            status = utworz_rezerwacje_hotres(d_in, d_out, wybrane_obiekty)
+                            if status == "OK": 
+                                st.success("🎉 Sukces! Pokoje zablokowane w Hotres.")
                             else: 
-                                st.error(status_res)
+                                st.error(status)
