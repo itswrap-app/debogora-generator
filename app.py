@@ -81,30 +81,24 @@ HOTRES_ROOM_MAP = {
 HOTRES_ROOM_NAME_TO_ID = {v: k for k, v in HOTRES_ROOM_MAP.items()}
 
 # --- BEZPIECZNA INICJALIZACJA STANU APLIKACJI ---
-if "klient_imie" not in st.session_state:
-    st.session_state.klient_imie = ""
-if "firma_n" not in st.session_state:
-    st.session_state.firma_n = ""
-if "nip_n" not in st.session_state:
-    st.session_state.nip_n = ""
-if "telefon_n" not in st.session_state:
-    st.session_state.telefon_n = ""
-if "email_n" not in st.session_state:
-    st.session_state.email_n = ""
-if "loaded_pozycje" not in st.session_state:
-    st.session_state.loaded_pozycje = None
-if "agenda_custom_text" not in st.session_state:
-    st.session_state.agenda_custom_text = ""
-if "l_osob_total" not in st.session_state:
-    st.session_state.l_osob_total = 10
-if "szczegoly_zajetosci" not in st.session_state:
-    st.session_state.szczegoly_zajetosci = {}
-if "wybrane_p" not in st.session_state:
-    st.session_state.wybrane_p = []
-if "wybrane_d" not in st.session_state:
-    st.session_state.wybrane_d = []
-if "pdf_page_list" not in st.session_state:
-    st.session_state.pdf_page_list = []
+if "klient_imie" not in st.session_state: st.session_state.klient_imie = ""
+if "firma_n" not in st.session_state: st.session_state.firma_n = ""
+if "nip_n" not in st.session_state: st.session_state.nip_n = ""
+if "telefon_n" not in st.session_state: st.session_state.telefon_n = ""
+if "email_n" not in st.session_state: st.session_state.email_n = ""
+if "loaded_pozycje" not in st.session_state: st.session_state.loaded_pozycje = None
+if "agenda_custom_text" not in st.session_state: st.session_state.agenda_custom_text = ""
+if "l_osob_total" not in st.session_state: st.session_state.l_osob_total = 10
+if "szczegoly_zajetosci" not in st.session_state: st.session_state.szczegoly_zajetosci = {}
+if "wybrane_p" not in st.session_state: st.session_state.wybrane_p = []
+if "wybrane_d" not in st.session_state: st.session_state.wybrane_d = []
+if "pdf_page_list" not in st.session_state: st.session_state.pdf_page_list = []
+
+# Nowe klucze sesji do odtwarzania UI z Archiwum
+if "wyz_sel_key" not in st.session_state: st.session_state.wyz_sel_key = []
+if "spa_sel_key" not in st.session_state: st.session_state.spa_sel_key = []
+if "atr_sel_key" not in st.session_state: st.session_state.atr_sel_key = []
+if "biz_sel_key" not in st.session_state: st.session_state.biz_sel_key = []
 
 # --- INTELIGENTNE ŁADOWANIE CZCIONEK Z DYSKU ---
 FONT_HEADER = 'Helvetica-Bold'
@@ -852,8 +846,28 @@ with tab3:
                             
                         st.session_state.agenda_custom_text = row[9]
                         
+                        # --- KLUCZOWA POPRAWKA ARCHIWUM: Odtwarzanie UI z JSONa ---
                         try: 
-                            st.session_state.loaded_pozycje = json.loads(row[10])
+                            pozycje_json = json.loads(row[10])
+                            st.session_state.loaded_pozycje = pozycje_json
+                            
+                            # Odtworzenie stanu pól wyboru (multiselect)
+                            st.session_state.wybrane_p = [p["Opis"] for p in pozycje_json if p["Opis"] in POKOJE_DWOREK.keys()]
+                            st.session_state.wybrane_d = [p["Opis"] for p in pozycje_json if p["Opis"] in CENNIK["domki"].keys()]
+                            st.session_state.wyz_sel_key = [p["Opis"] for p in pozycje_json if p["Opis"] in CENNIK["wyzywienie"].keys()]
+                            st.session_state.spa_sel_key = [p["Opis"] for p in pozycje_json if p["Opis"] in CENNIK["SPAstwisko"].keys()]
+                            st.session_state.atr_sel_key = [p["Opis"] for p in pozycje_json if p["Opis"] in CENNIK["Atrakcje"].keys()]
+                            st.session_state.biz_sel_key = [p["Opis"] for p in pozycje_json if p["Opis"] in CENNIK["Biznes"].keys()]
+                            
+                            # Odtworzenie wartości numerycznych (ilości osób/usług)
+                            for p in pozycje_json:
+                                o = p["Opis"]
+                                i = p["Ilość"]
+                                if o in POKOJE_DWOREK: st.session_state[f"os_{o}"] = i
+                                elif o in CENNIK["domki"]: st.session_state[f"os_{o}"] = i
+                                elif o in CENNIK["SPAstwisko"]: st.session_state[f"spa_{o}"] = i
+                                elif o in CENNIK["Atrakcje"]: st.session_state[f"atr_{o}"] = i
+                                elif o in CENNIK["Biznes"]: st.session_state[f"biz_{o}"] = i
                         except: 
                             st.session_state.loaded_pozycje = []
                             
@@ -965,7 +979,7 @@ with tab1:
 
     with st.container():
         st.subheader("3. Wyżywienie")
-        wyz_sel = st.multiselect("Wybierz opcje wyżywienia", list(CENNIK["wyzywienie"].keys()))
+        wyz_sel = st.multiselect("Wybierz opcje wyżywienia", list(CENNIK["wyzywienie"].keys()), key="wyz_sel_key")
         for w in wyz_sel:
             ile = st.number_input(f"Ilość porcji: {w}", 1, 5000, st.session_state.l_osob_total * dni)
             cena_w = CENNIK["wyzywienie"][w]["dane"]["cena"]
@@ -981,9 +995,9 @@ with tab1:
         st.subheader("4. Oferta Dodatkowa (SPAstwisko, Atrakcje, Biznes)")
         c_spa, c_atr, c_biz = st.columns(3)
         
-        def render_dodatki(kolumna, tytul, cennik_klucz, prefix):
+        def render_dodatki(kolumna, tytul, cennik_klucz, prefix, session_key):
             opcje = list(CENNIK[cennik_klucz].keys())
-            sel = kolumna.multiselect(tytul, opcje)
+            sel = kolumna.multiselect(tytul, opcje, key=session_key)
             for a in sel:
                 dane = CENNIK[cennik_klucz][a]
                 if dane["typ"] == "osoba":
@@ -1009,9 +1023,9 @@ with tab1:
                 })
             return sel
             
-        spa_sel = render_dodatki(c_spa, "SPAstwisko", "SPAstwisko", "spa")
-        atr_sel = render_dodatki(c_atr, "Atrakcje", "Atrakcje", "atr")
-        biz_sel = render_dodatki(c_biz, "Biznes", "Biznes", "biz")
+        spa_sel = render_dodatki(c_spa, "SPAstwisko", "SPAstwisko", "spa", "spa_sel_key")
+        atr_sel = render_dodatki(c_atr, "Atrakcje", "Atrakcje", "atr", "atr_sel_key")
+        biz_sel = render_dodatki(c_biz, "Biznes", "Biznes", "biz", "biz_sel_key")
 
     with st.container():
         st.subheader("5. Generator Harmonogramu (Agenda)")
@@ -1065,13 +1079,19 @@ with tab1:
             return txt
 
         nowy_draft_agendy = f"TERMIN WYDARZENIA: {d_in.strftime('%d.%m.%Y')} - {d_out.strftime('%d.%m.%Y')}\n\n"
+        
+        # --- KLUCZOWA POPRAWKA AGENDY: Sprawdzanie wyboru posiłków ---
+        ma_sniadanie = "Śniadanie" in wyz_sel
+        ma_obiad = "Obiadokolacja" in wyz_sel
+
         if liczba_dni == 1:
             evs, unassigned = fill_slot(10.5, 18.0, unassigned)
             evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
             nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             nowy_draft_agendy += f"• 10:00 - Przyjazd\n"
             nowy_draft_agendy += render_events(evs)
-            nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
+            if ma_obiad:
+                nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
             nowy_draft_agendy += render_events(evs_eve)
             nowy_draft_agendy += f"• 23:00 - Zakończenie pobytu\n"
         else:
@@ -1080,7 +1100,8 @@ with tab1:
             nowy_draft_agendy += f"DZIEŃ 1 ({d_in.strftime('%d.%m')})\n"
             nowy_draft_agendy += f"• 15:00 - Przyjazd i Zakwaterowanie\n"
             nowy_draft_agendy += render_events(evs)
-            nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
+            if ma_obiad:
+                nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
             nowy_draft_agendy += render_events(evs_eve)
             nowy_draft_agendy += "\n"
             
@@ -1089,19 +1110,23 @@ with tab1:
                 evs_eve, unassigned = fill_slot(19.0, 23.0, unassigned)
                 data_dnia = (d_in + timedelta(days=d-1)).strftime('%d.%m')
                 nowy_draft_agendy += f"DZIEŃ {d} ({data_dnia})\n"
-                nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
+                if ma_sniadanie:
+                    nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
                 nowy_draft_agendy += render_events(evs)
-                nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
+                if ma_obiad:
+                    nowy_draft_agendy += f"• 18:00 - 19:00 : Obiadokolacja\n"
                 nowy_draft_agendy += render_events(evs_eve)
                 nowy_draft_agendy += "\n"
                 
             evs, unassigned = fill_slot(10.0, 13.0, unassigned) 
             nowy_draft_agendy += f"DZIEŃ {liczba_dni} ({d_out.strftime('%d.%m')}) (Wyjazd)\n"
-            nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
+            if ma_sniadanie:
+                nowy_draft_agendy += f"• 09:00 - 10:00 : Śniadanie\n"
             nowy_draft_agendy += render_events(evs)
             nowy_draft_agendy += f"• 13:00 - Wymeldowanie\n"
 
-        aktualne_parametry_agendy = f"{d_in}_{d_out}_{wybrane_atrakcje_agenda}"
+        # Dodajemy wyz_sel do skrótu hash, żeby po usunięciu śniadania, okienko wygenerowało się na nowo
+        aktualne_parametry_agendy = f"{d_in}_{d_out}_{wybrane_atrakcje_agenda}_{wyz_sel}"
         if st.session_state.get("parametry_agendy_hash") != aktualne_parametry_agendy:
             st.session_state.agenda_custom_text = nowy_draft_agendy
             st.session_state.parametry_agendy_hash = aktualne_parametry_agendy
@@ -1298,7 +1323,8 @@ with tab1:
                                             
                                         t_data.append(["", "", "RAZEM:", f"{razem:,.0f} zł".replace(",", " ")])
                                         
-                                        table = Table(t_data, colWidths=[110, 220, 50, 90])
+                                        # Dodano `repeatRows=1` aby ładnie łamało strony tabeli
+                                        table = Table(t_data, colWidths=[110, 220, 50, 90], repeatRows=1)
                                         table.setStyle(TableStyle([
                                             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(CI['dark_green'])), 
                                             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1339,14 +1365,20 @@ with tab1:
                                                     bg_bytes = f.read()
                                                 
                                                 fg_reader = PdfReader(buf)
-                                                bg_reader = PdfReader(io.BytesIO(bg_bytes))
+                                                
+                                                # --- KLUCZOWA POPRAWKA PAGINACJI TABELI PDF ---
                                                 for i, fg_page in enumerate(fg_reader.pages):
-                                                    if i < len(bg_reader.pages):
-                                                        bg_page = bg_reader.pages[i]
+                                                    # Za każdym razem ładujemy stronę tła "na czysto"
+                                                    fresh_bg_reader = PdfReader(io.BytesIO(bg_bytes))
+                                                    
+                                                    if i < len(fresh_bg_reader.pages):
+                                                        bg_page = fresh_bg_reader.pages[i]
                                                     else:
-                                                        bg_page = bg_reader.pages[-1]
+                                                        bg_page = fresh_bg_reader.pages[-1]
+                                                        
                                                     bg_page.merge_page(fg_page)
                                                     merger.add_page(bg_page)
+                                                    
                                             except Exception: 
                                                 merger.append(PdfReader(buf, strict=False))
                                         else: 
