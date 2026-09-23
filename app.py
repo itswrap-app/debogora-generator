@@ -17,13 +17,7 @@ import uuid
 from google.oauth2.service_account import Credentials as SACredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-
-# PPTX
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
-
-# PyPDF
 from pypdf import PdfWriter, PdfReader
 
 # ReportLab
@@ -161,8 +155,8 @@ st.markdown(f"""
     }}
     div.stButton > button {{
         background-color: {CI['dark_green']} !important; color: white !important;
-        border-radius: 0px !important; font-family: 'Lora', serif !important; padding: 0.8rem 1rem !important;
-        text-transform: uppercase; letter-spacing: 1px;
+        border-radius: 0px !important; font-family: 'Lora', serif !important; padding: 0.8rem 3rem !important;
+        text-transform: uppercase; letter-spacing: 2px;
     }}
     div.stButton > button:hover {{ background-color: {CI['gray']} !important; }}
     </style>
@@ -334,83 +328,6 @@ def replace_text_in_pptx(prs, replacements):
     for slide in prs.slides:
         for shape in slide.shapes: 
             process_shape(shape, replacements)
-            
-# --- GENERATOR NATYWNEGO PPTX ---
-def generate_editable_pptx(df, klient_imie, firma_n, marka_oferty, agenda_text, razem):
-    prs = Presentation()
-    
-    # 1. Slajd Tytułowy
-    slide_title = prs.slides.add_slide(prs.slide_layouts[0])
-    title = slide_title.shapes.title
-    subtitle = slide_title.placeholders[1]
-    
-    docelowa_nazwa = firma_n if firma_n else klient_imie
-    title.text = f"Oferta pobytu - {marka_oferty}"
-    subtitle.text = f"Przygotowano dla: {docelowa_nazwa}\nData: {datetime.now().strftime('%Y-%m-%d')}"
-    
-    # 2. Slajd Agendy
-    if agenda_text:
-        slide_agenda = prs.slides.add_slide(prs.slide_layouts[1])
-        title_agenda = slide_agenda.shapes.title
-        title_agenda.text = "Proponowany Harmonogram"
-        
-        body_agenda = slide_agenda.shapes.placeholders[1]
-        body_agenda.text = agenda_text
-        
-        for paragraph in body_agenda.text_frame.paragraphs:
-            paragraph.font.size = Pt(14)
-            
-    # 3. Slajd Wyceny (Tabela)
-    slide_wycena = prs.slides.add_slide(prs.slide_layouts[5])
-    title_wycena = slide_wycena.shapes.title
-    title_wycena.text = "Zestawienie kosztów (Wycena)"
-    
-    rows = len(df) + 2
-    cols = 4
-    left = Inches(0.5)
-    top = Inches(1.5)
-    width = Inches(9.0)
-    height = Inches(0.8)
-    
-    shape = slide_wycena.shapes.add_table(rows, cols, left, top, width, height)
-    table = shape.table
-    
-    # Konfiguracja szerokości kolumn
-    table.columns[0].width = Inches(2.0)
-    table.columns[1].width = Inches(4.0)
-    table.columns[2].width = Inches(1.0)
-    table.columns[3].width = Inches(2.0)
-    
-    headers = ["Kategoria", "Opis usługi", "Ilość", "Suma"]
-    for i, header in enumerate(headers):
-        cell = table.cell(0, i)
-        cell.text = header
-        cell.fill.solid()
-        cell.fill.fore_color.rgb = RGBColor(0, 98, 47)
-        for paragraph in cell.text_frame.paragraphs:
-            paragraph.font.bold = True
-            paragraph.font.color.rgb = RGBColor(255, 255, 255)
-            
-    # Dane tabeli
-    for r_idx, row in df.iterrows():
-        table.cell(r_idx + 1, 0).text = str(row["Kategoria"])
-        table.cell(r_idx + 1, 1).text = str(row["Opis"])
-        table.cell(r_idx + 1, 2).text = str(row["Ilość"])
-        table.cell(r_idx + 1, 3).text = f"{row['Suma']:,.2f} PLN".replace(",", " ")
-        
-    # Podsumowanie RAZEM
-    cell_label = table.cell(rows - 1, 2)
-    cell_label.text = "RAZEM:"
-    cell_label.text_frame.paragraphs[0].font.bold = True
-    
-    cell_sum = table.cell(rows - 1, 3)
-    cell_sum.text = f"{razem:,.2f} PLN".replace(",", " ")
-    cell_sum.text_frame.paragraphs[0].font.bold = True
-    
-    pptx_stream = io.BytesIO()
-    prs.save(pptx_stream)
-    pptx_stream.seek(0)
-    return pptx_stream
 
 # --- MAPOWANIE NAZW I WYSZUKIWANIE PLIKÓW ---
 def normalize_pl(text):
@@ -1329,15 +1246,13 @@ with tab1:
             
             zatwierdzone_strony_pdf = edited_pages.sort_values("Kolejność")["Strona z Dysku"].dropna().tolist()
 
-            # --- SEKCJA PRZYCISKÓW EKSPORTU ---
-            c_actions1, c_actions2, c_actions3 = st.columns(3)
-            
+            c_actions1, c_actions2 = st.columns(2)
             with c_actions1:
-                if st.button("📄 GENERUJ FINALNY PDF Oferty", disabled=overbooking_error, type="primary"):
+                if st.button("GENERUJ FINALNY PDF Oferty", disabled=overbooking_error, type="primary"):
                     if not st.session_state.klient_imie: 
                         st.error("Podaj imię i nazwisko klienta!")
                     else:
-                        with st.spinner("Kompilowanie oferty PDF..."):
+                        with st.spinner("Kompilowanie oferty (izolacja sesji aktywowana)..."):
                             session_uid = uuid.uuid4().hex
                             try:
                                 merger = PdfWriter()
@@ -1520,37 +1435,8 @@ with tab1:
                                             os.remove(f)
                                     except: 
                                         pass
-                                        
-            with c_actions2:
-                if st.button("📊 GENERUJ EDYTOWALNY PPTX (Tabela + Agenda)", disabled=overbooking_error, type="primary"):
-                    if not st.session_state.klient_imie:
-                        st.error("Podaj imię i nazwisko klienta!")
-                    else:
-                        with st.spinner("Generowanie pliku PowerPoint..."):
-                            try:
-                                pptx_stream = generate_editable_pptx(
-                                    edf_pdf, 
-                                    st.session_state.klient_imie, 
-                                    st.session_state.firma_n, 
-                                    marka_oferty, 
-                                    st.session_state.agenda_custom_text, 
-                                    razem
-                                )
-                                timestamp = datetime.now().strftime('%d%m%H%M')
-                                nazwa_pliku_pptx = f"Wycena_Agenda_{safe_str(st.session_state.klient_imie).replace(' ', '_')}_{timestamp}.pptx"
-                                
-                                st.success("✅ Plik PPTX z danymi został wygenerowany!")
-                                st.download_button(
-                                    "📥 POBIERZ PPTX NA DYSK LOKALNY", 
-                                    pptx_stream, 
-                                    nazwa_pliku_pptx, 
-                                    "application/vnd.openxmlformats-officedocument.presentationml.presentation", 
-                                    type="primary"
-                                )
-                            except Exception as e:
-                                st.error(f"❌ Błąd generatora PPTX: {str(e)}")
             
-            with c_actions3:
+            with c_actions2:
                 if st.button("⚡ PRZEŚLIJ REZERWACJĘ DO HOTRES", type="secondary", use_container_width=True):
                     wybrane_obiekty = []
                     wybrane_obiekty.extend(st.session_state.wybrane_p)
